@@ -26,10 +26,10 @@ EXA_API_KEY    = os.getenv("EXA_API_KEY")
 APIF_KEY       = os.getenv("APIF_KEY")
 FD_KEY         = os.getenv("FD_KEY")
 
-HABER_KANAL_ID   = 1500441325047386152
-FUTBOL_KANAL_ID  = 1490431891545784471
-WIKI_KANAL_ID    = 1492870597988847626
-HABER_SAATI      = datetime.time(hour=15, minute=0)   # UTC 15:00 = TR 18:00
+HABER_KANAL_ID   = ""    # "" işaretinin içerisine Haberlerin otomatik yüklenmesini istediğiniz kanal'ın ID'sini yazın
+FUTBOL_KANAL_ID  = ""    # "" işaretinin içerisine Futbol maçlarının otomatik yüklenmesini istediğiniz kanal'ın ID'sini yazın
+WIKI_KANAL_ID    = ""    # "" işaretinin içerisin günlük Wİki'lerin otomatik yüklenmesini istediğiniz kanal'ın ID'sini yazın
+HABER_SAATI      = datetime.time(hour=9, minute=0)   # UTC 09:00 = TR 12:00
 WIKI_SAATI       = datetime.time(hour=9, minute=0)    # UTC 09:00 = TR 12:00
 WIKI_OLAY_SAYISI = 5
 TURKEY_TZ        = pytz.timezone("Europe/Istanbul")
