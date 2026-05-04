@@ -1,10 +1,10 @@
-##   ##    #####     #####    ##         #####    #######
-##   ##   ##   ##   ##        ##        ##   ##   ##     
-##   ##   ##   ##   ##        ##        ##   ##   ##     
-#######   ##   ##    #####    ##        #######   ###### 
-#######   ##   ##        ##   ##        #######   ###### 
-##   ##   ##   ##        ##   ##        ##   ##   ##     
-##   ##    #####     #####    #######   ##   ##   ##
+XX   XX    XXXXX     XXXXX    XX         XXXXX    XXXXXXX
+XX   XX   XX   XX   XX        XX        XX   XX   XX     
+XX   XX   XX   XX   XX        XX        XX   XX   XX     
+XXXXXXX   XX   XX    XXXXX    XX        XXXXXXX   XXXXXX 
+XXXXXXX   XX   XX        XX   XX        XXXXXXX   XXXXXX 
+XX   XX   XX   XX        XX   XX        XX   XX   XX     
+XX   XX    XXXXX     XXXXX    XXXXXXX   XX   XX   XX
 
 # 🎵 Hoşlaf Bot
 
