@@ -1,11 +1,3 @@
-XX   XX    XXXXX     XXXXX    XX         XXXXX    XXXXXXX
-XX   XX   XX   XX   XX        XX        XX   XX   XX     
-XX   XX   XX   XX   XX        XX        XX   XX   XX     
-XXXXXXX   XX   XX    XXXXX    XX        XXXXXXX   XXXXXX 
-XXXXXXX   XX   XX        XX   XX        XXXXXXX   XXXXXX 
-XX   XX   XX   XX        XX   XX        XX   XX   XX     
-XX   XX    XXXXX     XXXXX    XXXXXXX   XX   XX   XX
-
 # 🎵 Hoşlaf Bot
 
 Hoşlaf Discord sunucusu için geliştirilmiş çok amaçlı bot. Müzik çalma, futbol takibi, güncel haberler, web araması ve tarihte bugün özelliklerini tek çatı altında toplar.
