@@ -1,12 +1,13 @@
 # 🎵 Hoşlaf Bot
 
-Hoşlaf Discord sunucusu için geliştirilmiş çok amaçlı bot. Müzik çalma, futbol takibi, güncel haberler, web araması ve tarihte bugün özelliklerini tek çatı altında toplar.
+Hoşlaf Discord sunucusu için geliştirilmiş çok amaçlı bot. Müzik çalma, radyo, futbol takibi, güncel haberler, web araması ve tarihte bugün özelliklerini tek çatı altında toplar.
 
 ---
 
 ## ✨ Özellikler
 
 - 🎵 **Müzik** — YouTube, Spotify ve SoundCloud desteği, kuyruk sistemi
+- 📻 **Radyo** — İsim yazarak binlerce radyo istasyonunu anlık olarak çal
 - ⚽ **Futbol** — Canlı skorlar, maç takvimi, puan durumu, turnuva ağacı
 - 📰 **Haberler** — Türkiye gündemi, her akşam 18:00'de otomatik paylaşım
 - 🔍 **Web Araması** — Exa AI destekli anlık arama
@@ -80,7 +81,7 @@ After=network.target
 Type=simple
 User=kullanici_adi
 WorkingDirectory=/path/to/Hoslaf_Bot
-ExecStart=/usr/bin/python bot.py
+ExecStart=/usr/bin/python3 bot.py
 Restart=on-failure
 RestartSec=5
 
@@ -117,6 +118,26 @@ sudo systemctl start hoslafbot.service
 - ✅ Spotify (tek şarkı)
 - ✅ Spotify Playlist & Album
 - ✅ SoundCloud
+
+---
+
+## 📻 Radyo Komutları
+
+| Komut | Açıklama |
+|-------|----------|
+| `/radyo [isim]` | Radyo adı yazarak anlık yayın başlatır. En popüler eşleşmeyi otomatik seçer. |
+| `/radyolar [isim]` | Arama sonuçlarını listeler. Birden fazla sonuç varsa hangisini istediğini görebilirsin. |
+
+### Kullanım Örnekleri
+```
+/radyo Kral FM
+/radyo Power FM
+/radyo TRT Radyo 1
+/radyo NTV Radyo
+/radyolar rock   → rock tarzı radyoları listeler
+```
+
+Radio Browser API kullanılır — ek kurulum veya API key gerekmez. Dünya genelinde binlerce radyo istasyonuna erişilebilir.
 
 ---
 
@@ -193,6 +214,8 @@ Hoslaf_Bot/
 ├── bot.py          # Ana bot dosyası
 ├── .env            # API anahtarları (git'e yükleme!)
 ├── .gitignore
+├── terms.html      # Hizmet Koşulları
+├── privacy.html    # Gizlilik Politikası
 └── README.md
 ```
 
