@@ -26,10 +26,10 @@ EXA_API_KEY    = os.getenv("EXA_API_KEY")
 APIF_KEY       = os.getenv("APIF_KEY")
 FD_KEY         = os.getenv("FD_KEY")
 
-HABER_KANAL_ID   = ""    # "" işaretinin içerisine Haberlerin otomatik yüklenmesini istediğiniz kanal'ın ID'sini yazın
-FUTBOL_KANAL_ID  = ""    # "" işaretinin içerisine Futbol maçlarının otomatik yüklenmesini istediğiniz kanal'ın ID'sini yazın
-WIKI_KANAL_ID    = ""    # "" işaretinin içerisin günlük Wİki'lerin otomatik yüklenmesini istediğiniz kanal'ın ID'sini yazın
-HABER_SAATI      = datetime.time(hour=9, minute=0)   # UTC 09:00 = TR 12:00
+HABER_KANAL_ID   = 
+FUTBOL_KANAL_ID  = 
+WIKI_KANAL_ID    = 
+HABER_SAATI      = datetime.time(hour=15, minute=0)   # UTC 15:00 = TR 18:00
 WIKI_SAATI       = datetime.time(hour=9, minute=0)    # UTC 09:00 = TR 12:00
 WIKI_OLAY_SAYISI = 5
 TURKEY_TZ        = pytz.timezone("Europe/Istanbul")
@@ -907,6 +907,110 @@ async def rastgeletarih(interaction: discord.Interaction):
         await interaction.followup.send("⚠️ Olay alınamadı, tekrar dene.")
         return
     embed = wiki_embed_olustur(olaylar, rastgele_ay, rastgele_gun, dil)
+    await interaction.followup.send(embed=embed)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RADYO
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def radyo_ara(isim: str) -> list[dict]:
+    """Radio Browser API ile radyo ara."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://de1.api.radio-browser.info/json/stations/byname/" + isim,
+            headers={"User-Agent": "HoslafBot/1.0"},
+            params={"limit": 10, "hidebroken": "true", "order": "clickcount", "reverse": "true"}
+        ) as resp:
+            if resp.status != 200:
+                return []
+            return await resp.json()
+
+
+@bot.tree.command(name="radyo", description="Radyo yayını başlatır. Radyo adı yazarak arayabilirsin.")
+@app_commands.describe(isim="Radyo adı (örn: Kral FM, TRT Radyo 1, Power FM)")
+async def radyo(interaction: discord.Interaction, isim: str):
+    if not interaction.user.voice:
+        await interaction.response.send_message("❌ Bir ses kanalında olman gerekiyor!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    # Radyoyu ara
+    sonuclar = await radyo_ara(isim)
+    if not sonuclar:
+        await interaction.followup.send(f"❌ **{isim}** için radyo bulunamadı.")
+        return
+
+    # En iyi sonucu seç (clickcount'a göre sıralı geliyor)
+    radyo_istasyonu = sonuclar[0]
+    stream_url = radyo_istasyonu.get("url_resolved") or radyo_istasyonu.get("url")
+    radyo_adi = radyo_istasyonu.get("name", isim)
+    ulke = radyo_istasyonu.get("country", "")
+    favicon = radyo_istasyonu.get("favicon", "")
+
+    if not stream_url:
+        await interaction.followup.send(f"❌ **{radyo_adi}** için stream URL bulunamadı.")
+        return
+
+    guild = interaction.guild
+    voice_channel = interaction.user.voice.channel
+    vc = guild.voice_client
+
+    # Ses kanalına bağlan
+    if vc is None:
+        vc = await voice_channel.connect()
+    elif vc.channel != voice_channel:
+        await vc.move_to(voice_channel)
+
+    # Çalıyorsa durdur
+    if vc.is_playing() or vc.is_paused():
+        vc.stop()
+        queues[guild.id] = []
+
+    # Radyoyu çal
+    try:
+        vc.play(discord.FFmpegPCMAudio(stream_url, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", options="-vn"))
+        vc.source = discord.PCMVolumeTransformer(vc.source, volume=0.8)
+        current_track[guild.id] = f"📻 {radyo_adi}"
+
+        embed = discord.Embed(
+            title="📻 Radyo Başlatıldı",
+            description=f"**{radyo_adi}**",
+            color=0x9b59b6
+        )
+        if ulke:
+            embed.add_field(name="🌍 Ülke", value=ulke, inline=True)
+        embed.add_field(name="🔗 Stream", value=f"[Bağlantı]({stream_url})", inline=True)
+        embed.set_footer(text="Durdurmak için /kapat kullanabilirsin")
+        if favicon:
+            embed.set_thumbnail(url=favicon)
+
+        await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Radyo başlatılamadı: {e}")
+
+
+@bot.tree.command(name="radyolar", description="Arama sonuçlarını listeler, birden fazla sonuç varsa seçim yapabilirsin")
+@app_commands.describe(isim="Radyo adı")
+async def radyolar(interaction: discord.Interaction, isim: str):
+    await interaction.response.defer()
+    sonuclar = await radyo_ara(isim)
+    if not sonuclar:
+        await interaction.followup.send(f"❌ **{isim}** için sonuç bulunamadı.")
+        return
+
+    embed = discord.Embed(title=f"📻 '{isim}' için Radyo Sonuçları", color=0x9b59b6)
+    for i, r in enumerate(sonuclar[:10], 1):
+        ad = r.get("name", "?")
+        ulke = r.get("country", "?")
+        bitrate = r.get("bitrate", "?")
+        embed.add_field(
+            name=f"{i}. {ad}",
+            value=f"🌍 {ulke} • 🎚️ {bitrate} kbps",
+            inline=False
+        )
+    embed.set_footer(text="İstediğin radyoyu çalmak için /radyo [tam isim] kullan")
     await interaction.followup.send(embed=embed)
 
 # ─────────────────────────────────────────────────────────────────────────────
