@@ -7,6 +7,7 @@ $LogDir = Join-Path $ProjectDir "logs"
 $ServiceLog = Join-Path $LogDir "hoslafbot-runner.log"
 $StdOutLog = Join-Path $LogDir "hoslafbot-process.out.log"
 $StdErrLog = Join-Path $LogDir "hoslafbot-process.err.log"
+$LockFile = Join-Path $LogDir "hoslafbot-runner.lock"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Set-Location $ProjectDir
@@ -17,6 +18,14 @@ $env:PATH = "$ProjectDir;$env:PATH"
 
 function Write-RunnerLog($Message) {
     Add-Content -Path $ServiceLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+}
+
+$LockStream = $null
+try {
+    $LockStream = [System.IO.File]::Open($LockFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+} catch {
+    Write-RunnerLog "Another HoslafBot runner is already active. Exiting."
+    exit 0
 }
 
 Write-RunnerLog "HoslafBot runner started."
