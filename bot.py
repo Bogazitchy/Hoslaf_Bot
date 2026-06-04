@@ -3,19 +3,58 @@ from discord import app_commands
 from discord.ext import tasks, commands
 import yt_dlp
 import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+from spotipy.cache_handler import CacheFileHandler
+from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
 import asyncio
 import os
 import random
+import re
+import socket
+import time
+import json
+import difflib
 import lyricsgenius
 import aiohttp
 import datetime
 from datetime import date
 import pytz
 from dotenv import load_dotenv
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
+
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
+_DISCORD_DNS_SUFFIXES = ("discord.com", "discord.gg", "discordapp.com", "discord.media")
+
+def _install_discord_dns_override():
+    try:
+        import dns.resolver
+    except ImportError:
+        return
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["1.1.1.1", "8.8.8.8"]
+    resolver.timeout = 3
+    resolver.lifetime = 5
+
+    def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        hostname = str(host).rstrip(".").lower()
+        if hostname.endswith(_DISCORD_DNS_SUFFIXES):
+            try:
+                addresses = [str(answer) for answer in resolver.resolve(hostname, "A")]
+                results = []
+                for address in addresses:
+                    results.extend(_ORIGINAL_GETADDRINFO(address, port, family, type, proto, flags))
+                if results:
+                    return results
+            except Exception as exc:
+                print(f"Discord DNS override failed for {hostname}: {exc}")
+        return _ORIGINAL_GETADDRINFO(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = getaddrinfo
+
+_install_discord_dns_override()
 
 # ── Tokenlar & Ayarlar ────────────────────────────────────────────────────────
 DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN")
@@ -26,9 +65,9 @@ EXA_API_KEY    = os.getenv("EXA_API_KEY")
 APIF_KEY       = os.getenv("APIF_KEY")
 FD_KEY         = os.getenv("FD_KEY")
 
-HABER_KANAL_ID   = 
-FUTBOL_KANAL_ID  = 
-WIKI_KANAL_ID    = 
+HABER_KANAL_ID   = 1500441325047386152
+FUTBOL_KANAL_ID  = 1490431891545784471
+WIKI_KANAL_ID    = 1492870597988847626
 HABER_SAATI      = datetime.time(hour=15, minute=0)   # UTC 15:00 = TR 18:00
 WIKI_SAATI       = datetime.time(hour=9, minute=0)    # UTC 09:00 = TR 12:00
 WIKI_OLAY_SAYISI = 5
@@ -39,14 +78,18 @@ APIF_URL  = f"https://{APIF_HOST}"
 FD_URL    = "https://api.football-data.org/v4"
 
 # ── Spotify & Genius ──────────────────────────────────────────────────────────
+SPOTIFY_CLIENT_CACHE = ".spotify_client_cache"
+SPOTIFY_USER_CACHE = ".spotify_user_cache"
+
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_id=SPOTIFY_CLIENT,
-    client_secret=SPOTIFY_SECRET
+    client_secret=SPOTIFY_SECRET,
+    cache_handler=CacheFileHandler(cache_path=SPOTIFY_CLIENT_CACHE),
 ))
 genius = lyricsgenius.Genius(GENIUS_TOKEN, timeout=10, retries=2)
 
 FFMPEG_OPTS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "before_options": "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx -reconnect_delay_max 7",
     "options": "-vn",
 }
 executor = ThreadPoolExecutor(max_workers=4)
@@ -93,69 +136,297 @@ class HoslafBot(discord.Client):
 
 bot = HoslafBot()
 
-queues: dict[int, list] = {}
-text_channels: dict[int, discord.TextChannel] = {}
-current_track: dict[int, str] = {}
+@dataclass
+class Track:
+    source: str
+    query: str
+    title: str | None = None
+    webpage_url: str | None = None
+    thumbnail: str | None = None
+    duration: int | None = None
+    uploader: str | None = None
+    audio_url: str | None = None
+    requester_id: int | None = None
+    requester_name: str | None = None
+    resolved: bool = False
+    attempts: int = 0
+
+    @classmethod
+    def search(cls, query: str, requester_id: int | None = None, requester_name: str | None = None):
+        return cls(source="search", query=query, title=query, requester_id=requester_id, requester_name=requester_name)
+
+    @classmethod
+    def url(cls, url: str, title: str | None = None, requester_id: int | None = None, requester_name: str | None = None):
+        return cls(source="url", query=url, title=title or "Link", webpage_url=url, requester_id=requester_id, requester_name=requester_name)
+
+    @classmethod
+    def from_metadata(cls, query: str, metadata: dict, requester_id: int | None = None, requester_name: str | None = None):
+        return cls(
+            source="resolved",
+            query=query,
+            title=metadata.get("title") or query,
+            webpage_url=metadata.get("webpage_url"),
+            thumbnail=metadata.get("thumbnail"),
+            duration=metadata.get("duration"),
+            uploader=metadata.get("uploader"),
+            audio_url=metadata.get("audio_url"),
+            requester_id=requester_id,
+            requester_name=requester_name,
+            resolved=True,
+        )
+
+    @property
+    def display_title(self):
+        return self.title or self.query
+
+    def resolve_query(self):
+        if self.source == "search":
+            return f"ytsearch:{self.query}"
+        return self.webpage_url or self.query
+
+    def update_from_metadata(self, metadata: dict):
+        self.title = metadata.get("title") or self.title or self.query
+        self.webpage_url = metadata.get("webpage_url") or self.webpage_url
+        self.thumbnail = metadata.get("thumbnail") or self.thumbnail
+        self.duration = metadata.get("duration") or self.duration
+        self.uploader = metadata.get("uploader") or self.uploader
+        self.audio_url = metadata.get("audio_url")
+        self.resolved = True
+
+    def metadata(self):
+        return {
+            "audio_url": self.audio_url,
+            "title": self.display_title,
+            "webpage_url": self.webpage_url,
+            "thumbnail": self.thumbnail,
+            "duration": self.duration,
+            "uploader": self.uploader,
+        }
+
+@dataclass
+class MusicPlayer:
+    guild_id: int
+    queue: list[Track] = field(default_factory=list)
+    current: Track | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    prefetch_task: asyncio.Task | None = None
+    text_channel_id: int | None = None
+    voice_channel_id: int | None = None
+    volume: float = 0.8
+    mode: str = "music"
+    starting: bool = False
+    skip_requested: bool = False
+    ignore_next_after: bool = False
+    autoplay: bool = False
+    history: list[Track] = field(default_factory=list)
+    panel_message_id: int | None = None
+    idle_task: asyncio.Task | None = None
+
+players: dict[int, MusicPlayer] = {}
+MUSIC_STATS_FILE = "music_stats.json"
+
+def get_player(guild_id: int) -> MusicPlayer:
+    player = players.get(guild_id)
+    if player is None:
+        player = MusicPlayer(guild_id=guild_id)
+        players[guild_id] = player
+    return player
+
+def load_music_stats():
+    try:
+        with open(MUSIC_STATS_FILE, "r", encoding="utf-8") as stats_file:
+            return json.load(stats_file)
+    except (FileNotFoundError, ValueError):
+        return {"users": {}}
+
+def save_music_stats(stats):
+    with open(MUSIC_STATS_FILE, "w", encoding="utf-8") as stats_file:
+        json.dump(stats, stats_file, ensure_ascii=False, indent=2)
+
+def record_music_stat(guild_id: int, track: Track):
+    if not track.requester_id:
+        return
+    stats = load_music_stats()
+    key = f"{guild_id}:{track.requester_id}"
+    user = stats.setdefault("users", {}).setdefault(
+        key,
+        {"name": track.requester_name or str(track.requester_id), "tracks": 0, "duration": 0, "top_tracks": {}, "top_artists": {}},
+    )
+    user["name"] = track.requester_name or user.get("name") or str(track.requester_id)
+    user["tracks"] = int(user.get("tracks", 0)) + 1
+    user["duration"] = int(user.get("duration", 0)) + int(track.duration or 0)
+    top_tracks = user.setdefault("top_tracks", {})
+    top_tracks[track.display_title] = int(top_tracks.get(track.display_title, 0)) + 1
+    if track.uploader:
+        top_artists = user.setdefault("top_artists", {})
+        top_artists[track.uploader] = int(top_artists.get(track.uploader, 0)) + 1
+    save_music_stats(stats)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  MÜZİK YARDIMCI FONKSİYONLAR
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_queue(guild_id):
-    if guild_id not in queues:
-        queues[guild_id] = []
-    return queues[guild_id]
+    return get_player(guild_id).queue
 
-def is_spotify_url(t): return "spotify.com" in t
+def get_current_title(guild_id):
+    current = get_player(guild_id).current
+    return current.display_title if current else None
+
+def is_playback_active(player: MusicPlayer, vc):
+    return bool(
+        player.starting
+        or player.current
+        or player.queue
+        or (vc and (vc.is_playing() or vc.is_paused()))
+    )
+
+def is_spotify_url(t): return "spotify.com" in t or t.startswith("spotify:")
 def is_url(t): return t.startswith("http://") or t.startswith("https://")
-def is_playlist_url(t): return ("list=" in t) or ("spotify.com/playlist" in t) or ("spotify.com/album" in t)
+def is_spotify_playlist_url(t): return ("spotify.com/playlist" in t) or t.startswith("spotify:playlist:")
+def is_spotify_album_url(t): return ("spotify.com/album" in t) or t.startswith("spotify:album:")
+def is_playlist_url(t): return ("list=" in t) or is_spotify_playlist_url(t) or is_spotify_album_url(t)
 
-def _spotify_to_search_query(url):
-    track_id = url.split("/track/")[-1].split("?")[0]
-    track = sp.track(track_id)
-    artists = ", ".join(a["name"] for a in track["artists"])
-    return f"{artists} - {track['name']}"
+class SpotifyPlaylistError(Exception):
+    pass
 
-def _spotify_playlist_to_queries(url):
+def friendly_music_error(error):
+    message = str(error)
+    lowered = message.lower()
+    if isinstance(error, SpotifyPlaylistError) or "spotify" in lowered:
+        return "Spotify bağlantısını okuyamadım. Playlist için Spotify yetkilendirmesi gerekebilir."
+    if "extractor" in lowered or "video unavailable" in lowered or "requested format" in lowered:
+        return "Bu şarkıyı bulamadım veya oynatılabilir format alamadım. Farklı bir isim ya da link deneyebilirsin."
+    if "timed out" in lowered or "timeout" in lowered or "10054" in lowered:
+        return "Müzik kaynağına bağlanırken ağ kesintisi oldu. Birazdan tekrar deneyebilirsin."
+    return "Müzik işlemi tamamlanamadı. Farklı bir isim ya da link deneyebilirsin."
+
+def _spotify_id(url, kind):
+    patterns = [
+        rf"open\.spotify\.com/(?:intl-[a-z]{{2}}/)?{kind}/([A-Za-z0-9]+)",
+        rf"spotify:{kind}:([A-Za-z0-9]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    raise SpotifyPlaylistError(f"Spotify {kind} linki okunamadı.")
+
+def _spotify_user_token():
+    try:
+        import json
+        with open(SPOTIFY_USER_CACHE, "r", encoding="utf-8") as cache_file:
+            token_info = json.load(cache_file)
+    except (FileNotFoundError, ValueError):
+        return None
+    if token_info.get("expires_at", 0) > time.time() + 60:
+        return token_info.get("access_token")
+    refresh_token = token_info.get("refresh_token")
+    if not refresh_token:
+        return None
+    auth_manager = SpotifyOAuth(
+        client_id=SPOTIFY_CLIENT,
+        client_secret=SPOTIFY_SECRET,
+        redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback"),
+        scope="playlist-read-private playlist-read-collaborative",
+        cache_path=SPOTIFY_USER_CACHE,
+        open_browser=False,
+    )
+    refreshed = auth_manager.refresh_access_token(refresh_token)
+    return refreshed.get("access_token")
+
+def _spotify_client_token():
     import requests
-    queries = []
     token_resp = requests.post(
         "https://accounts.spotify.com/api/token",
         data={"grant_type": "client_credentials"},
-        auth=(SPOTIFY_CLIENT, SPOTIFY_SECRET)
+        auth=(SPOTIFY_CLIENT, SPOTIFY_SECRET),
+        timeout=20,
     )
+    if token_resp.status_code != 200:
+        raise SpotifyPlaylistError(f"Spotify token alınamadı ({token_resp.status_code}).")
     token = token_resp.json().get("access_token")
-    if "spotify.com/playlist" in url:
-        playlist_id = url.split("/playlist/")[-1].split("?")[0]
+    if not token:
+        raise SpotifyPlaylistError("Spotify token yanıtı boş geldi.")
+    return token
+
+def _spotify_get_json(url, token, params=None):
+    import requests
+    response = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params=params or {},
+        timeout=30,
+    )
+    if response.status_code in (401, 403):
+        raise SpotifyPlaylistError(
+            "Spotify playlist içeriği için kullanıcı yetkisi gerekiyor. "
+            "Spotify'ın yeni API kurallarında bazı playlistler client id/secret ile açılamıyor."
+        )
+    if response.status_code != 200:
+        raise SpotifyPlaylistError(f"Spotify API hata döndürdü ({response.status_code}).")
+    return response.json()
+
+def _spotify_track_to_query(track):
+    if not track or track.get("type") not in (None, "track") or track.get("is_local"):
+        return None
+    name = track.get("name")
+    artists = ", ".join(a.get("name", "") for a in track.get("artists", []) if a.get("name"))
+    if not name or not artists:
+        return None
+    return f"{artists} - {name}"
+
+def _spotify_to_search_query(url):
+    track_id = _spotify_id(url, "track")
+    track = sp.track(track_id)
+    query = _spotify_track_to_query(track)
+    if not query:
+        raise SpotifyPlaylistError("Spotify şarkısı okunamadı.")
+    return query
+
+def _spotify_playlist_to_queries(url):
+    queries = []
+    if is_spotify_playlist_url(url):
+        playlist_id = _spotify_id(url, "playlist")
+        token = _spotify_user_token() or _spotify_client_token()
         offset = 0
         while True:
-            r = requests.get(
-                f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
-                headers={"Authorization": f"Bearer {token}"},
-                params={"limit": 100, "offset": offset}
-            )
-            data = r.json()
-            if r.status_code != 200:
-                break
+            try:
+                data = _spotify_get_json(
+                    f"https://api.spotify.com/v1/playlists/{playlist_id}/items",
+                    token,
+                    {"limit": 100, "offset": offset, "additional_types": "track"},
+                )
+            except SpotifyPlaylistError:
+                data = _spotify_get_json(
+                    f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
+                    _spotify_client_token(),
+                    {"limit": 100, "offset": offset, "additional_types": "track"},
+                )
             for item in data.get("items", []):
-                track = item.get("track")
-                if track and track.get("name"):
-                    artists = ", ".join(a["name"] for a in track["artists"])
-                    queries.append(f"{artists} - {track['name']}")
+                query = _spotify_track_to_query(item.get("item") or item.get("track"))
+                if query:
+                    queries.append(query)
             if not data.get("next"):
                 break
             offset += 100
-    elif "spotify.com/album" in url:
-        album_id = url.split("/album/")[-1].split("?")[0]
-        r = requests.get(
-            f"https://api.spotify.com/v1/albums/{album_id}/tracks",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"limit": 50}
-        )
-        for track in r.json().get("items", []):
-            if track.get("name"):
-                artists = ", ".join(a["name"] for a in track["artists"])
-                queries.append(f"{artists} - {track['name']}")
+    elif is_spotify_album_url(url):
+        album_id = _spotify_id(url, "album")
+        token = _spotify_client_token()
+        offset = 0
+        while True:
+            data = _spotify_get_json(
+                f"https://api.spotify.com/v1/albums/{album_id}/tracks",
+                token,
+                {"limit": 50, "offset": offset},
+            )
+            for track in data.get("items", []):
+                query = _spotify_track_to_query(track)
+                if query:
+                    queries.append(query)
+            if not data.get("next"):
+                break
+            offset += 50
     return queries
 
 YDL_OPTS = {
@@ -174,7 +445,14 @@ def _fetch_audio(query):
         info = ydl.extract_info(query, download=False)
         if "entries" in info:
             info = info["entries"][0]
-        return info["url"], info.get("title", "Bilinmeyen Şarkı")
+        return {
+            "audio_url": info["url"],
+            "title": info.get("title", "Bilinmeyen Şarkı"),
+            "webpage_url": info.get("webpage_url") or info.get("original_url"),
+            "thumbnail": info.get("thumbnail"),
+            "duration": info.get("duration"),
+            "uploader": info.get("uploader") or info.get("channel"),
+        }
 
 def _fetch_playlist_yt(url):
     opts = {**YDL_OPTS, "noplaylist": False, "extract_flat": True}
@@ -187,11 +465,38 @@ def _fetch_playlist_yt(url):
                     tracks.append((f"https://www.youtube.com/watch?v={entry['id']}", entry.get("title", "Bilinmeyen Şarkı")))
     return tracks
 
+def _fetch_search_results(query, limit=8):
+    opts = {**YDL_OPTS, "extract_flat": True}
+    results = []
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+        for entry in info.get("entries", []):
+            if not entry:
+                continue
+            video_id = entry.get("id")
+            webpage_url = entry.get("webpage_url") or entry.get("url")
+            if webpage_url and not webpage_url.startswith("http") and video_id:
+                webpage_url = f"https://www.youtube.com/watch?v={video_id}"
+            if not webpage_url and video_id:
+                webpage_url = f"https://www.youtube.com/watch?v={video_id}"
+            if webpage_url:
+                results.append({
+                    "url": webpage_url,
+                    "title": entry.get("title") or query,
+                    "duration": entry.get("duration"),
+                    "thumbnail": entry.get("thumbnail"),
+                    "uploader": entry.get("uploader") or entry.get("channel"),
+                })
+    return results
+
 async def fetch_audio(query):
     return await asyncio.get_event_loop().run_in_executor(executor, _fetch_audio, query)
 
 async def fetch_playlist_yt(url):
     return await asyncio.get_event_loop().run_in_executor(executor, _fetch_playlist_yt, url)
+
+async def fetch_search_results(query, limit=8):
+    return await asyncio.get_event_loop().run_in_executor(executor, _fetch_search_results, query, limit)
 
 async def spotify_to_search_query(url):
     return await asyncio.get_event_loop().run_in_executor(executor, _spotify_to_search_query, url)
@@ -199,33 +504,403 @@ async def spotify_to_search_query(url):
 async def spotify_playlist_to_queries(url):
     return await asyncio.get_event_loop().run_in_executor(executor, _spotify_playlist_to_queries, url)
 
-async def play_next(guild):
-    queue = get_queue(guild.id)
-    vc = guild.voice_client
-    if not queue or not vc:
-        current_track.pop(guild.id, None)
+async def resolve_queue_item(item):
+    if isinstance(item, Track):
+        await resolve_track(item)
+        return item
+    if len(item) >= 3 and isinstance(item[2], dict):
+        return Track.from_metadata(item[1], item[2])
+    if item[0] == "__search__":
+        track = Track.search(item[1])
+        await resolve_track(track)
+        return track
+    if item[0] == "__url__":
+        track = Track.url(item[1])
+        await resolve_track(track)
+        return track
+    if isinstance(item[0], str) and item[0].startswith("https://www.youtube.com/watch"):
+        track = Track.url(item[0], item[1])
+        await resolve_track(track)
+        return track
+    return item
+
+async def resolve_track(track: Track, *, refresh_audio: bool = False):
+    if track.resolved and track.audio_url and not refresh_audio:
+        return track
+    metadata = await fetch_audio(track.resolve_query())
+    track.update_from_metadata(metadata)
+    return track
+
+async def prefetch_queue(guild_id):
+    player = get_player(guild_id)
+    queue = player.queue
+    index = 0
+    while index < len(queue):
+        item = queue[index]
+        if isinstance(item, Track) and item.resolved:
+            index += 1
+            continue
+        try:
+            resolved = await resolve_queue_item(item)
+            if index < len(queue) and queue[index] == item:
+                queue[index] = resolved
+                index += 1
+        except Exception as exc:
+            print(f"Kuyruk on hazirlama hatasi: {exc}")
+            index += 1
+
+def schedule_queue_prefetch(guild_id):
+    player = get_player(guild_id)
+    if player.prefetch_task and not player.prefetch_task.done():
         return
-    item = queue.pop(0)
-    try:
-        if item[0] == "__search__":
-            audio_url, title = await fetch_audio(f"ytsearch:{item[1]}")
-        elif item[0].startswith("https://www.youtube.com/watch"):
-            audio_url, title = await fetch_audio(item[0])
+    player.prefetch_task = bot.loop.create_task(prefetch_queue(guild_id))
+
+def format_duration(seconds):
+    if not seconds:
+        return "Bilinmiyor"
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+def total_queue_duration(player: MusicPlayer):
+    known = sum(int(track.duration or 0) for track in player.queue)
+    unknown = sum(1 for track in player.queue if not track.duration)
+    if not known and unknown:
+        return "Bilinmiyor"
+    suffix = f" (+{unknown} bilinmeyen)" if unknown else ""
+    return format_duration(known) + suffix
+
+def queue_title(item):
+    if isinstance(item, Track):
+        return item.display_title
+    if len(item) >= 3 and isinstance(item[2], dict):
+        return item[2].get("title", item[1])
+    return item[1]
+
+def requester_label(track: Track):
+    return track.requester_name or "Bilinmiyor"
+
+def normalize_track_title(title):
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+def is_similar_track(candidate: Track, previous: Track):
+    if candidate.webpage_url and previous.webpage_url and candidate.webpage_url == previous.webpage_url:
+        return True
+    candidate_title = normalize_track_title(candidate.display_title)
+    previous_title = normalize_track_title(previous.display_title)
+    if not candidate_title or not previous_title:
+        return False
+    if candidate_title == previous_title:
+        return True
+    if candidate_title in previous_title or previous_title in candidate_title:
+        return True
+    return difflib.SequenceMatcher(None, candidate_title, previous_title).ratio() >= 0.88
+
+async def pick_autoplay_track(player: MusicPlayer, seed_track: Track):
+    seed_artist = seed_track.uploader or ""
+    seed_title = seed_track.display_title
+    search_queries = []
+    if seed_artist:
+        search_queries.extend([
+            f"{seed_artist} mix",
+            f"{seed_artist} popular songs",
+            f"{seed_artist} playlist",
+        ])
+    search_queries.extend([
+        f"{seed_title} radio",
+        f"{seed_title} similar songs",
+        f"{seed_title} mix",
+    ])
+    recent_tracks = player.history[-20:] + [seed_track]
+    tried_titles = set()
+    for query in search_queries:
+        try:
+            results = await fetch_search_results(query, limit=8)
+        except Exception as exc:
+            print(f"Otomatik oneri arama hatasi: {exc}")
+            continue
+        random.shuffle(results)
+        for result in results:
+            candidate = Track.url(
+                result["url"],
+                result.get("title"),
+                requester_name="Otomatik Oneri",
+            )
+            candidate.duration = result.get("duration")
+            candidate.thumbnail = result.get("thumbnail")
+            candidate.uploader = result.get("uploader")
+            title_key = normalize_track_title(candidate.display_title)
+            if title_key in tried_titles:
+                continue
+            tried_titles.add(title_key)
+            if any(is_similar_track(candidate, previous) for previous in recent_tracks):
+                continue
+            return candidate
+    return None
+
+def build_music_panel_embed(player: MusicPlayer):
+    embed = discord.Embed(title="Muzik Paneli", color=0xDB2777)
+    current = player.current
+    if current:
+        title = current.display_title
+        url = current.webpage_url
+        embed.description = f"**[{title}]({url})**" if url else f"**{title}**"
+        embed.add_field(name="Sure", value=format_duration(current.duration), inline=True)
+        embed.add_field(name="Ses", value=f"%{int(player.volume * 100)}", inline=True)
+        embed.add_field(name="Isteyen", value=requester_label(current), inline=True)
+        if current.thumbnail:
+            embed.set_thumbnail(url=current.thumbnail)
+    else:
+        embed.description = "Su an calan bir sarki yok."
+        embed.add_field(name="Ses", value=f"%{int(player.volume * 100)}", inline=True)
+
+    queue_preview = []
+    for i, track in enumerate(player.queue[:10], 1):
+        queue_preview.append(f"`{i}.` {track.display_title} - {requester_label(track)}")
+    embed.add_field(name="Kuyruk", value="\n".join(queue_preview) if queue_preview else "Kuyruk bos.", inline=False)
+    embed.add_field(name="Toplam Kuyruk", value=total_queue_duration(player), inline=True)
+    embed.add_field(name="Otomatik Oneri", value="Acik" if player.autoplay else "Kapali", inline=True)
+    embed.set_footer(text=f"{len(player.queue)} sarki sirada")
+    return embed
+
+def build_queue_embed(player: MusicPlayer):
+    embed = discord.Embed(title="Kuyruk", color=0x3498DB)
+    if player.current:
+        embed.add_field(
+            name="Simdi caliyor",
+            value=f"**{player.current.display_title}**\nIsteyen: {requester_label(player.current)}",
+            inline=False,
+        )
+    if not player.queue:
+        embed.description = "Sirada sarki yok."
+    else:
+        lines = []
+        for i, track in enumerate(player.queue[:10], 1):
+            duration = format_duration(track.duration)
+            lines.append(f"`{i}.` **{track.display_title}**\nSure: {duration} | Isteyen: {requester_label(track)}")
+        if len(player.queue) > 10:
+            lines.append(f"... ve {len(player.queue) - 10} sarki daha")
+        embed.add_field(name="Siradaki sarkilar", value="\n".join(lines), inline=False)
+    embed.add_field(name="Toplam sure", value=total_queue_duration(player), inline=True)
+    embed.add_field(name="Sarki sayisi", value=str(len(player.queue)), inline=True)
+    return embed
+
+def build_history_embed(player: MusicPlayer):
+    embed = discord.Embed(title="Gecmis", color=0x8E44AD)
+    if not player.history:
+        embed.description = "Henuz gecmis yok."
+        return embed
+    lines = []
+    for i, track in enumerate(reversed(player.history[-20:]), 1):
+        lines.append(f"`{i}.` **{track.display_title}**\nIsteyen: {requester_label(track)}")
+    embed.description = "\n".join(lines)
+    return embed
+
+async def update_music_panel(guild_id: int):
+    player = get_player(guild_id)
+    channel = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
+    if not channel:
+        return
+    embed = build_music_panel_embed(player)
+    view = NowPlayingView(guild_id)
+    if player.panel_message_id:
+        try:
+            message = await channel.fetch_message(player.panel_message_id)
+            await message.edit(embed=embed, view=view)
+            return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            player.panel_message_id = None
+    message = await channel.send(embed=embed, view=view)
+    player.panel_message_id = message.id
+
+class NowPlayingView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=900)
+        self.guild_id = guild_id
+
+    def _vc(self, interaction: discord.Interaction):
+        return interaction.guild.voice_client if interaction.guild else None
+
+    @discord.ui.button(label="Pause/Resume", style=discord.ButtonStyle.secondary)
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self._vc(interaction)
+        if not vc:
+            await interaction.response.send_message("Ses kanalinda degilim.", ephemeral=True)
+        elif vc.is_playing():
+            vc.pause()
+            await interaction.response.send_message("Duraklatildi.", ephemeral=True)
+        elif vc.is_paused():
+            vc.resume()
+            await interaction.response.send_message("Devam ediyor.", ephemeral=True)
         else:
-            audio_url, title = item[0], item[1]
+            await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self._vc(interaction)
+        player = get_player(self.guild_id)
+        if vc and (vc.is_playing() or vc.is_paused()):
+            player.skip_requested = True
+            vc.stop()
+            await interaction.response.send_message("Atlandi.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self._vc(interaction)
+        player = get_player(self.guild_id)
+        async with player.lock:
+            player.queue.clear()
+            player.current = None
+            player.starting = False
+            player.mode = "music"
+            if player.prefetch_task and not player.prefetch_task.done():
+                player.prefetch_task.cancel()
+        if vc:
+            await vc.disconnect()
+        await update_music_panel(self.guild_id)
+        await interaction.response.send_message("Kapatildi.", ephemeral=True)
+
+    @discord.ui.button(label="Queue", style=discord.ButtonStyle.secondary)
+    async def queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_queue_embed(get_player(self.guild_id)), ephemeral=True)
+
+    @discord.ui.button(label="Vol -", style=discord.ButtonStyle.secondary)
+    async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._change_volume(interaction, -0.1)
+
+    @discord.ui.button(label="Vol +", style=discord.ButtonStyle.secondary)
+    async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._change_volume(interaction, 0.1)
+
+    async def _change_volume(self, interaction: discord.Interaction, delta: float):
+        vc = self._vc(interaction)
+        player = get_player(self.guild_id)
+        player.volume = max(0.0, min(1.5, player.volume + delta))
+        if vc and vc.source and hasattr(vc.source, "volume"):
+            vc.source.volume = player.volume
+        await update_music_panel(self.guild_id)
+        await interaction.response.send_message(f"Ses seviyesi: %{int(player.volume * 100)}", ephemeral=True)
+
+async def play_next(guild):
+    player = get_player(guild.id)
+    async with player.lock:
+        vc = guild.voice_client
+        if not player.queue or not vc:
+            player.current = None
+            player.starting = False
+            if not player.queue:
+                schedule_idle_disconnect(guild.id)
+                await update_music_panel(guild.id)
+            return
+        item = player.queue.pop(0)
+        player.starting = True
+        player.skip_requested = False
+
+    try:
+        track = await resolve_queue_item(item)
+        if not isinstance(track, Track):
+            track = Track.url(track[0], track[1])
+        await resolve_track(track, refresh_audio=True)
     except Exception as e:
-        print(f"Şarkı yüklenemedi: {e}")
+        print(f"Sarki yuklenemedi: {e}")
+        channel = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
+        if channel:
+            await channel.send(friendly_music_error(e))
+        async with player.lock:
+            player.current = None
+            player.starting = False
         await play_next(guild)
         return
-    current_track[guild.id] = title
+
+    async with player.lock:
+        vc = guild.voice_client
+        if not vc:
+            player.current = None
+            player.starting = False
+            return
+        if vc.is_playing() or vc.is_paused():
+            player.queue.insert(0, track)
+            player.starting = False
+            return
+        player.current = track
+
     def after_play(error):
-        if error: print(f"Oynatma hatası: {error}")
-        asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
-    vc.play(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTS), after=after_play)
-    vc.source = discord.PCMVolumeTransformer(vc.source, volume=0.8)
-    channel = text_channels.get(guild.id)
-    if channel:
-        await channel.send(f"🎵 Şimdi çalıyor: **{title}**")
+        asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error), bot.loop)
+
+    vc.play(discord.FFmpegPCMAudio(track.audio_url, **FFMPEG_OPTS), after=after_play)
+    vc.source = discord.PCMVolumeTransformer(vc.source, volume=player.volume)
+    async with player.lock:
+        player.starting = False
+
+    await update_music_panel(guild.id)
+    schedule_queue_prefetch(guild.id)
+
+async def handle_track_finished(guild, track: Track, error):
+    player = get_player(guild.id)
+    async with player.lock:
+        if player.ignore_next_after:
+            player.ignore_next_after = False
+            return
+    retry = False
+    if error:
+        print(f"Oynatma hatasi: {error}")
+        retry = not player.skip_requested and track.attempts < 2
+    needs_autoplay = False
+    async with player.lock:
+        if player.current is track:
+            player.current = None
+        if retry:
+            track.attempts += 1
+            track.audio_url = None
+            track.resolved = False
+            player.queue.insert(0, track)
+        elif not error:
+            player.history.append(track)
+            player.history = player.history[-50:]
+            if player.autoplay and not player.queue and track.source != "radio":
+                needs_autoplay = True
+        player.skip_requested = False
+    if needs_autoplay:
+        autoplay_track = await pick_autoplay_track(player, track)
+        if autoplay_track:
+            async with player.lock:
+                if player.autoplay and not player.queue and not player.skip_requested:
+                    player.queue.append(autoplay_track)
+        else:
+            channel = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
+            if channel:
+                await channel.send("Otomatik öneri için yeni bir şarkı bulamadım, aynı şarkıyı tekrar açmadım.")
+    if not retry and not error:
+        record_music_stat(guild.id, track)
+    await play_next(guild)
+
+async def idle_disconnect_later(guild_id: int):
+    await asyncio.sleep(180)
+    guild = bot.get_guild(guild_id)
+    player = get_player(guild_id)
+    vc = guild.voice_client if guild else None
+    if not guild or not vc:
+        return
+    non_bot_members = [member for member in vc.channel.members if not member.bot]
+    async with player.lock:
+        should_leave = not non_bot_members and not player.queue and not player.current
+        if should_leave:
+            player.starting = False
+            player.mode = "music"
+    if should_leave:
+        await vc.disconnect()
+        await update_music_panel(guild_id)
+
+def schedule_idle_disconnect(guild_id: int):
+    player = get_player(guild_id)
+    if player.idle_task and not player.idle_task.done():
+        return
+    player.idle_task = bot.loop.create_task(idle_disconnect_later(guild_id))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  FUTBOL YARDIMCI FONKSİYONLAR
@@ -470,230 +1145,319 @@ async def before_daily_schedule():
 
 @bot.event
 async def on_ready():
-    print(f"✅ Hoşlaf Bot hazır! {bot.user}")
+    print(f"Hoslaf Bot hazir! {bot.user}")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if not bot.user or not member.guild:
+        return
+    if member.id != bot.user.id:
+        player = get_player(member.guild.id)
+        vc = member.guild.voice_client
+        if vc and after.channel == vc.channel and player.idle_task and not player.idle_task.done():
+            player.idle_task.cancel()
+        if vc and before.channel == vc.channel:
+            non_bot_members = [voice_member for voice_member in vc.channel.members if not voice_member.bot]
+            if not non_bot_members:
+                schedule_idle_disconnect(member.guild.id)
+        return
+
+    player = get_player(member.guild.id)
+    if after.channel:
+        player.voice_channel_id = after.channel.id
+        return
+    if not before.channel or player.skip_requested:
+        return
+
+    track_to_resume = None
+    async with player.lock:
+        if player.mode == "music" and player.current:
+            track_to_resume = player.current
+            track_to_resume.audio_url = None
+            track_to_resume.resolved = False
+            player.queue.insert(0, track_to_resume)
+            player.current = None
+            player.starting = True
+        elif player.mode != "music":
+            player.current = None
+
+    if track_to_resume:
+        await asyncio.sleep(3)
+        try:
+            player.voice_channel_id = before.channel.id
+            await before.channel.connect()
+            await play_next(member.guild)
+        except Exception as exc:
+            print(f"Voice reconnect failed: {exc}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  MÜZİK KOMUTLARI
 # ─────────────────────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="oynat", description="Şarkı adı, YouTube/Spotify/SoundCloud linki veya playlist çal")
-@app_commands.describe(sarki="Şarkı adı, YouTube linki, Spotify linki veya playlist linki")
+@bot.tree.command(name="oynat", description="Sarki adi, YouTube/Spotify/SoundCloud linki veya playlist cal")
+@app_commands.describe(sarki="Sarki adi, YouTube linki, Spotify linki veya playlist linki")
 async def oynat(interaction: discord.Interaction, sarki: str):
     if not interaction.user.voice:
-        await interaction.response.send_message("❌ Bir ses kanalında olman gerekiyor!", ephemeral=True)
+        await interaction.response.send_message("Bir ses kanalinda olman gerekiyor!", ephemeral=True)
         return
+
     voice_channel = interaction.user.voice.channel
     guild = interaction.guild
+    player = get_player(guild.id)
     await interaction.response.defer()
-    text_channels[guild.id] = interaction.channel
+
+    player.text_channel_id = interaction.channel.id
+    player.voice_channel_id = voice_channel.id
     vc = guild.voice_client
     if vc is None:
         vc = await voice_channel.connect()
     elif vc.channel != voice_channel:
         await vc.move_to(voice_channel)
-    queue = get_queue(guild.id)
+
     try:
-        if "spotify.com/playlist" in sarki or "spotify.com/album" in sarki:
+        tracks: list[Track] = []
+        start_message = None
+        queue_message = None
+        requester_id = interaction.user.id
+        requester_name = interaction.user.display_name
+
+        if is_spotify_playlist_url(sarki) or is_spotify_album_url(sarki):
             queries = await spotify_playlist_to_queries(sarki)
             if not queries:
-                await interaction.followup.send("❌ Playlist boş veya bulunamadı.")
+                await interaction.followup.send("Playlist bos veya bulunamadi.")
                 return
-            first_url, first_title = await fetch_audio(f"ytsearch:{queries[0]}")
-            for q in queries[1:]:
-                queue.append(("__search__", q))
-            if vc.is_playing() or vc.is_paused():
-                queue.insert(0, (first_url, first_title))
-                await interaction.followup.send(f"📋 **{len(queries)} şarkı** kuyruğa eklendi!")
-            else:
-                queue.insert(0, (first_url, first_title))
-                await interaction.followup.send(f"▶️ **{len(queries)} şarkılık Spotify playlist** başlıyor!")
-                await play_next(guild)
+            tracks = [Track.search(q, requester_id, requester_name) for q in queries]
+            start_message = f"{len(tracks)} sarkilik Spotify playlist basliyor."
+            queue_message = f"{len(tracks)} sarki kuyruga eklendi."
         elif is_spotify_url(sarki):
             query = await spotify_to_search_query(sarki)
-            audio_url, title = await fetch_audio(f"ytsearch:{query}")
-            if vc.is_playing() or vc.is_paused():
-                queue.append((audio_url, title))
-                await interaction.followup.send(f"📋 **{title}** kuyruğa eklendi! (Pozisyon: {len(queue)})")
-            else:
-                queue.insert(0, (audio_url, title))
-                await interaction.followup.send(f"▶️ Başlıyor: **{title}**")
-                await play_next(guild)
+            tracks = [Track.search(query, requester_id, requester_name)]
+            start_message = f"Basliyor: {query}"
+            queue_message = f"{query} kuyruga eklendi."
         elif is_url(sarki) and is_playlist_url(sarki):
-            tracks = await fetch_playlist_yt(sarki)
-            if not tracks:
-                await interaction.followup.send("❌ Playlist boş veya bulunamadı.")
+            playlist_tracks = await fetch_playlist_yt(sarki)
+            if not playlist_tracks:
+                await interaction.followup.send("Playlist bos veya bulunamadi.")
                 return
-            first_url, first_title = await fetch_audio(tracks[0][0])
-            for video_url, title in tracks[1:]:
-                queue.append((video_url, title))
-            if vc.is_playing() or vc.is_paused():
-                queue.insert(0, (first_url, first_title))
-                await interaction.followup.send(f"📋 **{len(tracks)} şarkı** kuyruğa eklendi!")
-            else:
-                queue.insert(0, (first_url, first_title))
-                await interaction.followup.send(f"▶️ **{len(tracks)} şarkılık YouTube playlist** başlıyor!")
-                await play_next(guild)
+            tracks = [Track.url(video_url, title, requester_id, requester_name) for video_url, title in playlist_tracks]
+            start_message = f"{len(tracks)} sarkilik YouTube playlist basliyor."
+            queue_message = f"{len(tracks)} sarki kuyruga eklendi."
         elif is_url(sarki):
-            audio_url, title = await fetch_audio(sarki)
-            if vc.is_playing() or vc.is_paused():
-                queue.append((audio_url, title))
-                await interaction.followup.send(f"📋 **{title}** kuyruğa eklendi! (Pozisyon: {len(queue)})")
-            else:
-                queue.insert(0, (audio_url, title))
-                await interaction.followup.send(f"▶️ Başlıyor: **{title}**")
-                await play_next(guild)
+            tracks = [Track.url(sarki, requester_id=requester_id, requester_name=requester_name)]
+            start_message = "Link basliyor."
+            queue_message = "Link kuyruga eklendi."
         else:
-            audio_url, title = await fetch_audio(f"ytsearch:{sarki}")
-            if vc.is_playing() or vc.is_paused():
-                queue.append((audio_url, title))
-                await interaction.followup.send(f"📋 **{title}** kuyruğa eklendi! (Pozisyon: {len(queue)})")
-            else:
-                queue.insert(0, (audio_url, title))
-                await interaction.followup.send(f"▶️ Başlıyor: **{title}**")
-                await play_next(guild)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Hata: {e}")
+            tracks = [Track.search(sarki, requester_id, requester_name)]
+            start_message = f"Basliyor: {sarki}"
+            queue_message = f"{sarki} kuyruga eklendi."
 
-@bot.tree.command(name="kapat", description="Şarkıyı kapatır ve ses kanalından ayrılır")
+        async with player.lock:
+            active = is_playback_active(player, vc)
+            player.mode = "music"
+            if player.idle_task and not player.idle_task.done():
+                player.idle_task.cancel()
+            if active:
+                player.queue.extend(tracks)
+                position = len(player.queue) - len(tracks) + 1
+            else:
+                player.starting = True
+                player.queue.extend(tracks)
+                position = 1
+
+        schedule_queue_prefetch(guild.id)
+        if active:
+            suffix = f" (Pozisyon: {position})" if len(tracks) == 1 else ""
+            await interaction.followup.send(queue_message + suffix)
+            await update_music_panel(guild.id)
+        else:
+            await interaction.followup.send(start_message)
+            await play_next(guild)
+    except Exception as e:
+        async with player.lock:
+            player.starting = False
+        await interaction.followup.send(friendly_music_error(e))
+
+@bot.tree.command(name="kapat", description="Sarkiyi kapatir ve ses kanalindan ayrilir")
 async def kapat(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
+    player = get_player(interaction.guild.id)
+    async with player.lock:
+        player.queue.clear()
+        player.current = None
+        player.starting = False
+        player.mode = "music"
+        player.skip_requested = True
+        if player.prefetch_task and not player.prefetch_task.done():
+            player.prefetch_task.cancel()
     if vc:
-        queues[interaction.guild.id] = []
-        current_track.pop(interaction.guild.id, None)
         await vc.disconnect()
-        await interaction.response.send_message("⏹️ Kapatıldı!")
+        await interaction.response.send_message("Kapatildi!")
     else:
-        await interaction.response.send_message("❌ Zaten bir ses kanalında değilim.", ephemeral=True)
+        await interaction.response.send_message("Zaten bir ses kanalinda degilim.", ephemeral=True)
 
-@bot.tree.command(name="atla", description="Şarkıyı atlar")
-@app_commands.describe(miktar="Kaç şarkı atlanacak (varsayılan 1)")
+@bot.tree.command(name="atla", description="Sarkiyi atlar")
+@app_commands.describe(miktar="Kac sarki atlanacak (varsayilan 1)")
 async def atla(interaction: discord.Interaction, miktar: int = 1):
     vc = interaction.guild.voice_client
+    player = get_player(interaction.guild.id)
     if not vc or (not vc.is_playing() and not vc.is_paused()):
-        await interaction.response.send_message("❌ Şu an çalan bir şarkı yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
         return
-    queue = get_queue(interaction.guild.id)
-    del queue[:min(miktar - 1, len(queue))]
+    async with player.lock:
+        del player.queue[:min(max(miktar - 1, 0), len(player.queue))]
+        player.skip_requested = True
     vc.stop()
-    await interaction.response.send_message(f"⏭️ **{miktar}** şarkı atlandı!" if miktar > 1 else "⏭️ Atlandı!")
+    await interaction.response.send_message(f"{miktar} sarki atlandi!" if miktar > 1 else "Atlandi!")
 
-@bot.tree.command(name="duraklat", description="Şarkıyı duraklatır")
+@bot.tree.command(name="duraklat", description="Sarkiyi duraklatir")
 async def duraklat(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("⏸️ Duraklatıldı!")
+        await interaction.response.send_message("Duraklatildi!")
     else:
-        await interaction.response.send_message("❌ Şu an çalan bir şarkı yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
 
-@bot.tree.command(name="devam", description="Duraklatılan şarkıyı devam ettirir")
+@bot.tree.command(name="devam", description="Duraklatilan sarkiyi devam ettirir")
 async def devam(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("▶️ Devam ediliyor!")
+        await interaction.response.send_message("Devam ediliyor!")
     else:
-        await interaction.response.send_message("❌ Duraklatılmış bir şarkı yok.", ephemeral=True)
+        await interaction.response.send_message("Duraklatilmis bir sarki yok.", ephemeral=True)
 
-@bot.tree.command(name="sardır", description="Şarkıyı belirtilen saniyeye sarar")
-@app_commands.describe(saniye="Kaçıncı saniyeye sarılacak")
+@bot.tree.command(name="sardir", description="Sarkiyi belirtilen saniyeye sarar")
+@app_commands.describe(saniye="Kacinci saniyeye sarilacak")
 async def sardir(interaction: discord.Interaction, saniye: int):
     vc = interaction.guild.voice_client
-    if not vc or (not vc.is_playing() and not vc.is_paused()):
-        await interaction.response.send_message("❌ Şu an çalan bir şarkı yok.", ephemeral=True)
+    player = get_player(interaction.guild.id)
+    if not vc or (not vc.is_playing() and not vc.is_paused()) or not player.current:
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
         return
     guild = interaction.guild
-    title = current_track.get(guild.id, "")
     await interaction.response.defer()
     try:
-        if not title:
-            await interaction.followup.send("❌ Şarkı bilgisi bulunamadı.")
-            return
-        audio_url, _ = await fetch_audio(f"ytsearch:{title}")
-        seek_opts = {"before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {saniye}", "options": "-vn"}
-        volume = 0.8
+        track = player.current
+        await resolve_track(track, refresh_audio=True)
+        seek_opts = {
+            "before_options": f"-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx -reconnect_delay_max 7 -ss {saniye}",
+            "options": "-vn",
+        }
+        volume = player.volume
         if vc.source and hasattr(vc.source, "volume"):
             volume = vc.source.volume
+        async with player.lock:
+            player.ignore_next_after = True
+            player.skip_requested = False
         def after_seek(error):
-            if error: print(f"Seek hatası: {error}")
-            asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
+            asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error), bot.loop)
         vc.stop()
         await asyncio.sleep(0.5)
-        vc.play(discord.FFmpegPCMAudio(audio_url, **seek_opts), after=after_seek)
+        vc.play(discord.FFmpegPCMAudio(track.audio_url, **seek_opts), after=after_seek)
         vc.source = discord.PCMVolumeTransformer(vc.source, volume=volume)
         dakika, sn = divmod(saniye, 60)
-        await interaction.followup.send(f"⏩ **{dakika:02d}:{sn:02d}** saniyesine sarıldı!")
+        await interaction.followup.send(f"{dakika:02d}:{sn:02d} saniyesine sarildi!")
     except Exception as e:
-        await interaction.followup.send(f"❌ Hata: {e}")
+        await interaction.followup.send(f"Hata: {e}")
 
-@bot.tree.command(name="karistir", description="Oynatma listesini karıştırır")
+@bot.tree.command(name="karistir", description="Oynatma listesini karistirir")
 async def karistir(interaction: discord.Interaction):
-    queue = get_queue(interaction.guild.id)
-    if not queue:
-        await interaction.response.send_message("📋 Kuyruk zaten boş.", ephemeral=True)
+    player = get_player(interaction.guild.id)
+    if not player.queue:
+        await interaction.response.send_message("Kuyruk zaten bos.", ephemeral=True)
         return
-    random.shuffle(queue)
-    await interaction.response.send_message(f"🔀 **{len(queue)} şarkı** karıştırıldı!")
+    async with player.lock:
+        random.shuffle(player.queue)
+    await interaction.response.send_message(f"{len(player.queue)} sarki karistirildi!")
 
 @bot.tree.command(name="ses", description="Ses seviyesini ayarla (0-100)")
 @app_commands.describe(seviye="Ses seviyesi (0-100)")
 async def ses(interaction: discord.Interaction, seviye: int):
     vc = interaction.guild.voice_client
-    if vc and vc.source:
-        vc.source.volume = max(0, min(seviye, 100)) / 100
-        await interaction.response.send_message(f"🔊 Ses seviyesi: **{seviye}%**")
+    player = get_player(interaction.guild.id)
+    player.volume = max(0, min(seviye, 100)) / 100
+    if vc and vc.source and hasattr(vc.source, "volume"):
+        vc.source.volume = player.volume
+        await interaction.response.send_message(f"Ses seviyesi: **{seviye}%**")
     else:
-        await interaction.response.send_message("❌ Şu an çalan bir şarkı yok.", ephemeral=True)
+        await interaction.response.send_message(f"Ses seviyesi kaydedildi: **{seviye}%**")
 
-@bot.tree.command(name="kuyruk", description="Kuyruğu göster")
+@bot.tree.command(name="kuyruk", description="Kuyrugu goster")
 async def kuyruk_cmd(interaction: discord.Interaction):
-    queue = get_queue(interaction.guild.id)
-    title = current_track.get(interaction.guild.id)
-    lines = []
-    if title: lines.append(f"▶️ **Şimdi çalıyor:** {title}")
-    if not queue:
-        await interaction.response.send_message("\n".join(lines) if lines else "📋 Kuyruk boş.")
-        return
-    lines.append("📋 **Sıradaki şarkılar:**")
-    for i, item in enumerate(queue[:20]):
-        lines.append(f"{i+1}. {item[1]}")
-    if len(queue) > 20:
-        lines.append(f"... ve {len(queue)-20} şarkı daha")
-    await interaction.response.send_message("\n".join(lines))
+    await interaction.response.send_message(embed=build_queue_embed(get_player(interaction.guild.id)))
 
-@bot.tree.command(name="lyrics", description="Şu an çalan şarkının sözlerini gösterir")
+@bot.tree.command(name="gecmis", description="Son calinan sarkilari goster")
+async def gecmis(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=build_history_embed(get_player(interaction.guild.id)))
+
+@bot.tree.command(name="otomatik", description="Kuyruk bitince otomatik oneriyi acar veya kapatir")
+@app_commands.describe(durum="ac veya kapat")
+@app_commands.choices(durum=[
+    app_commands.Choice(name="Ac", value="ac"),
+    app_commands.Choice(name="Kapat", value="kapat"),
+])
+async def otomatik(interaction: discord.Interaction, durum: str):
+    player = get_player(interaction.guild.id)
+    player.autoplay = durum == "ac"
+    await update_music_panel(interaction.guild.id)
+    await interaction.response.send_message("Otomatik oneri acildi." if player.autoplay else "Otomatik oneri kapatildi.")
+
+@bot.tree.command(name="muzikprofil", description="Muzik istatistiklerini goster")
+async def muzikprofil(interaction: discord.Interaction):
+    stats = load_music_stats()
+    key = f"{interaction.guild.id}:{interaction.user.id}"
+    user = stats.get("users", {}).get(key)
+    embed = discord.Embed(title=f"Muzik Profili - {interaction.user.display_name}", color=0x2ECC71)
+    if not user:
+        embed.description = "Henuz muzik istatistigin yok."
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    embed.add_field(name="Eklenen sarki", value=str(user.get("tracks", 0)), inline=True)
+    embed.add_field(name="Toplam sure", value=format_duration(user.get("duration", 0)), inline=True)
+    top_tracks = sorted(user.get("top_tracks", {}).items(), key=lambda item: item[1], reverse=True)[:5]
+    top_artists = sorted(user.get("top_artists", {}).items(), key=lambda item: item[1], reverse=True)[:5]
+    embed.add_field(
+        name="En cok ekledigin sarkilar",
+        value="\n".join(f"`{count}x` {title}" for title, count in top_tracks) if top_tracks else "Yok",
+        inline=False,
+    )
+    embed.add_field(
+        name="En cok ekledigin sanatci/kanal",
+        value="\n".join(f"`{count}x` {artist}" for artist, count in top_artists) if top_artists else "Yok",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="lyrics", description="Su an calan sarkinin sozlerini gosterir")
 async def lyrics(interaction: discord.Interaction):
-    title = current_track.get(interaction.guild.id)
+    title = get_current_title(interaction.guild.id)
     if not title:
-        await interaction.response.send_message("❌ Şu an çalan bir şarkı yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
         return
     await interaction.response.defer()
     try:
         loop = asyncio.get_event_loop()
         song = await loop.run_in_executor(executor, lambda: genius.search_song(title))
         if not song:
-            await interaction.followup.send(f"❌ **{title}** için şarkı sözü bulunamadı.")
+            await interaction.followup.send(f"**{title}** icin sarki sozu bulunamadi.")
             return
         lyrics_text = song.lyrics
         if "EmbedShare" in lyrics_text:
             lyrics_text = lyrics_text[:lyrics_text.rfind("EmbedShare")]
-        header = f"🎤 **{song.title}** — {song.artist}\n\n"
+        header = f"**{song.title}** - {song.artist}\n\n"
         max_len = 1990 - len(header)
         if len(lyrics_text) <= max_len:
             await interaction.followup.send(header + lyrics_text)
         else:
-            await interaction.followup.send(header + lyrics_text[:max_len] + "…")
+            await interaction.followup.send(header + lyrics_text[:max_len] + "...")
             remaining = lyrics_text[max_len:]
             while remaining:
                 chunk = remaining[:1990]
                 remaining = remaining[1990:]
-                await interaction.channel.send(chunk + ("…" if remaining else ""))
+                await interaction.channel.send(chunk + ("..." if remaining else ""))
     except Exception as e:
-        await interaction.followup.send(f"❌ Şarkı sözleri alınamadı: {e}")
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  HABER & ARAMA KOMUTLARI
-# ─────────────────────────────────────────────────────────────────────────────
+        await interaction.followup.send(f"Sarki sozleri alinamadi: {e}")
 
 @bot.tree.command(name="ara", description="Exa AI ile web'de arama yap")
 @app_commands.describe(sorgu="Arama sorgusu")
@@ -926,22 +1690,19 @@ async def radyo_ara(isim: str) -> list[dict]:
             return await resp.json()
 
 
-@bot.tree.command(name="radyo", description="Radyo yayını başlatır. Radyo adı yazarak arayabilirsin.")
-@app_commands.describe(isim="Radyo adı (örn: Kral FM, TRT Radyo 1, Power FM)")
+@bot.tree.command(name="radyo", description="Radyo yayini baslatir. Radyo adi yazarak arayabilirsin.")
+@app_commands.describe(isim="Radyo adi (orn: Kral FM, TRT Radyo 1, Power FM)")
 async def radyo(interaction: discord.Interaction, isim: str):
     if not interaction.user.voice:
-        await interaction.response.send_message("❌ Bir ses kanalında olman gerekiyor!", ephemeral=True)
+        await interaction.response.send_message("Bir ses kanalinda olman gerekiyor!", ephemeral=True)
         return
 
     await interaction.response.defer()
-
-    # Radyoyu ara
     sonuclar = await radyo_ara(isim)
     if not sonuclar:
-        await interaction.followup.send(f"❌ **{isim}** için radyo bulunamadı.")
+        await interaction.followup.send(f"**{isim}** icin radyo bulunamadi.")
         return
 
-    # En iyi sonucu seç (clickcount'a göre sıralı geliyor)
     radyo_istasyonu = sonuclar[0]
     stream_url = radyo_istasyonu.get("url_resolved") or radyo_istasyonu.get("url")
     radyo_adi = radyo_istasyonu.get("name", isim)
@@ -949,46 +1710,59 @@ async def radyo(interaction: discord.Interaction, isim: str):
     favicon = radyo_istasyonu.get("favicon", "")
 
     if not stream_url:
-        await interaction.followup.send(f"❌ **{radyo_adi}** için stream URL bulunamadı.")
+        await interaction.followup.send(f"**{radyo_adi}** icin stream URL bulunamadi.")
         return
 
     guild = interaction.guild
     voice_channel = interaction.user.voice.channel
+    player = get_player(guild.id)
+    player.text_channel_id = interaction.channel.id
+    player.voice_channel_id = voice_channel.id
     vc = guild.voice_client
 
-    # Ses kanalına bağlan
     if vc is None:
         vc = await voice_channel.connect()
     elif vc.channel != voice_channel:
         await vc.move_to(voice_channel)
 
-    # Çalıyorsa durdur
     if vc.is_playing() or vc.is_paused():
         vc.stop()
-        queues[guild.id] = []
+    async with player.lock:
+        player.queue.clear()
+        player.current = None
+        player.starting = False
+        player.skip_requested = True
+        player.mode = "radio"
+        if player.prefetch_task and not player.prefetch_task.done():
+            player.prefetch_task.cancel()
 
-    # Radyoyu çal
     try:
-        vc.play(discord.FFmpegPCMAudio(stream_url, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", options="-vn"))
-        vc.source = discord.PCMVolumeTransformer(vc.source, volume=0.8)
-        current_track[guild.id] = f"📻 {radyo_adi}"
+        vc.play(discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS))
+        vc.source = discord.PCMVolumeTransformer(vc.source, volume=player.volume)
+        player.current = Track(
+            source="radio",
+            query=stream_url,
+            title=f"Radyo: {radyo_adi}",
+            webpage_url=stream_url,
+            thumbnail=favicon or None,
+            resolved=True,
+        )
 
         embed = discord.Embed(
-            title="📻 Radyo Başlatıldı",
+            title="Radyo Baslatildi",
             description=f"**{radyo_adi}**",
-            color=0x9b59b6
+            color=0x9b59b6,
         )
         if ulke:
-            embed.add_field(name="🌍 Ülke", value=ulke, inline=True)
-        embed.add_field(name="🔗 Stream", value=f"[Bağlantı]({stream_url})", inline=True)
-        embed.set_footer(text="Durdurmak için /kapat kullanabilirsin")
+            embed.add_field(name="Ulke", value=ulke, inline=True)
+        embed.add_field(name="Stream", value=f"[Baglanti]({stream_url})", inline=True)
+        embed.set_footer(text="Durdurmak icin /kapat kullanabilirsin")
         if favicon:
             embed.set_thumbnail(url=favicon)
 
         await interaction.followup.send(embed=embed)
-
     except Exception as e:
-        await interaction.followup.send(f"❌ Radyo başlatılamadı: {e}")
+        await interaction.followup.send(f"Radyo baslatilamadi: {e}")
 
 
 @bot.tree.command(name="radyolar", description="Arama sonuçlarını listeler, birden fazla sonuç varsa seçim yapabilirsin")

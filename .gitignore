@@ -3,3 +3,9 @@
 package-lock.json
 __pycache__/
 *.pyc
+.venv/
+logs/
+ffmpeg.exe
+.spotify_*_cache
+music_stats.json
+HoslafBotService.exe
