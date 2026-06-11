@@ -15,6 +15,7 @@ import json
 import difflib
 import lyricsgenius
 import aiohttp
+import requests
 import datetime
 from datetime import date
 import pytz
@@ -216,10 +217,12 @@ class MusicPlayer:
     mode: str = "music"
     starting: bool = False
     skip_requested: bool = False
+    manual_disconnect: bool = False
     ignore_next_after: bool = False
     autoplay: bool = False
     history: list[Track] = field(default_factory=list)
     panel_message_id: int | None = None
+    playback_generation: int = 0
     idle_task: asyncio.Task | None = None
 
 players: dict[int, MusicPlayer] = {}
@@ -699,16 +702,67 @@ def build_history_embed(player: MusicPlayer):
     embed.description = "\n".join(lines)
     return embed
 
-async def update_music_panel(guild_id: int):
+TEMP_MUSIC_MESSAGE_SECONDS = 4
+
+
+async def delete_message_later(message, delay: float = TEMP_MUSIC_MESSAGE_SECONDS):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def send_temporary_followup(interaction: discord.Interaction, content: str):
+    message = await interaction.followup.send(
+        content,
+        ephemeral=True,
+        wait=True,
+    )
+    asyncio.create_task(delete_message_later(message))
+    return message
+
+
+async def find_existing_music_panel(channel):
+    if not bot.user:
+        return None
+    try:
+        async for message in channel.history(limit=100):
+            if message.author.id != bot.user.id or not message.embeds:
+                continue
+            if message.embeds[0].title == "Muzik Paneli":
+                return message
+    except (discord.Forbidden, discord.HTTPException):
+        return None
+    return None
+
+async def update_music_panel(guild_id: int, move_to_latest: bool = False):
     player = get_player(guild_id)
     channel = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
     if not channel:
         return
     embed = build_music_panel_embed(player)
     view = NowPlayingView(guild_id)
+    message = None
     if player.panel_message_id:
         try:
             message = await channel.fetch_message(player.panel_message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            player.panel_message_id = None
+            message = None
+    if message is None:
+        message = await find_existing_music_panel(channel)
+        if message:
+            player.panel_message_id = message.id
+    if message and move_to_latest:
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+        player.panel_message_id = None
+        message = None
+    if message:
+        try:
             await message.edit(embed=embed, view=view)
             return
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -718,62 +772,49 @@ async def update_music_panel(guild_id: int):
 
 class NowPlayingView(discord.ui.View):
     def __init__(self, guild_id: int):
-        super().__init__(timeout=900)
+        super().__init__(timeout=None)
         self.guild_id = guild_id
 
     def _vc(self, interaction: discord.Interaction):
         return interaction.guild.voice_client if interaction.guild else None
 
-    @discord.ui.button(label="Pause/Resume", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Duraklat/Devam", style=discord.ButtonStyle.secondary, row=0, custom_id="music:pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = self._vc(interaction)
         if not vc:
-            await interaction.response.send_message("Ses kanalinda degilim.", ephemeral=True)
+            await interaction.response.send_message("Ses kanalinda degilim.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         elif vc.is_playing():
             vc.pause()
-            await interaction.response.send_message("Duraklatildi.", ephemeral=True)
+            await interaction.response.send_message("Duraklatildi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         elif vc.is_paused():
             vc.resume()
-            await interaction.response.send_message("Devam ediyor.", ephemeral=True)
+            await interaction.response.send_message("Devam ediyor.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
-            await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+            await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
-    @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Atla", style=discord.ButtonStyle.primary, row=0, custom_id="music:skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = self._vc(interaction)
         player = get_player(self.guild_id)
         if vc and (vc.is_playing() or vc.is_paused()):
             player.skip_requested = True
             vc.stop()
-            await interaction.response.send_message("Atlandi.", ephemeral=True)
+            await interaction.response.send_message("Atlandi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
-            await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+            await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Durdur", style=discord.ButtonStyle.danger, row=0, custom_id="music:stop")
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = self._vc(interaction)
-        player = get_player(self.guild_id)
-        async with player.lock:
-            player.queue.clear()
-            player.current = None
-            player.starting = False
-            player.mode = "music"
-            if player.prefetch_task and not player.prefetch_task.done():
-                player.prefetch_task.cancel()
-        if vc:
-            await vc.disconnect()
+        await interaction.response.defer(ephemeral=True)
+        await stop_music_player(interaction.guild)
         await update_music_panel(self.guild_id)
-        await interaction.response.send_message("Kapatildi.", ephemeral=True)
+        await send_temporary_followup(interaction, "Muzik durduruldu ve ses kanalindan ayrildim.")
 
-    @discord.ui.button(label="Queue", style=discord.ButtonStyle.secondary)
-    async def queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=build_queue_embed(get_player(self.guild_id)), ephemeral=True)
-
-    @discord.ui.button(label="Vol -", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Ses -", style=discord.ButtonStyle.secondary, row=0, custom_id="music:volume_down")
     async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._change_volume(interaction, -0.1)
 
-    @discord.ui.button(label="Vol +", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Ses +", style=discord.ButtonStyle.secondary, row=0, custom_id="music:volume_up")
     async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._change_volume(interaction, 0.1)
 
@@ -784,7 +825,31 @@ class NowPlayingView(discord.ui.View):
         if vc and vc.source and hasattr(vc.source, "volume"):
             vc.source.volume = player.volume
         await update_music_panel(self.guild_id)
-        await interaction.response.send_message(f"Ses seviyesi: %{int(player.volume * 100)}", ephemeral=True)
+        await interaction.response.send_message(f"Ses seviyesi: %{int(player.volume * 100)}", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+
+async def stop_music_player(guild):
+    if not guild:
+        return
+    player = get_player(guild.id)
+    vc = guild.voice_client
+    async with player.lock:
+        player.playback_generation += 1
+        player.manual_disconnect = True
+        player.skip_requested = False
+        player.queue.clear()
+        player.current = None
+        player.starting = False
+        player.mode = "music"
+        if player.prefetch_task and not player.prefetch_task.done():
+            player.prefetch_task.cancel()
+        player.prefetch_task = None
+        if player.idle_task and not player.idle_task.done():
+            player.idle_task.cancel()
+        player.idle_task = None
+    if vc:
+        if vc.is_playing() or vc.is_paused():
+            vc.stop()
+        await vc.disconnect(force=True)
 
 async def play_next(guild):
     player = get_player(guild.id)
@@ -800,6 +865,7 @@ async def play_next(guild):
         item = player.queue.pop(0)
         player.starting = True
         player.skip_requested = False
+        generation = player.playback_generation
 
     try:
         track = await resolve_queue_item(item)
@@ -830,7 +896,7 @@ async def play_next(guild):
         player.current = track
 
     def after_play(error):
-        asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error), bot.loop)
+        asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error, generation), bot.loop)
 
     vc.play(discord.FFmpegPCMAudio(track.audio_url, **FFMPEG_OPTS), after=after_play)
     vc.source = discord.PCMVolumeTransformer(vc.source, volume=player.volume)
@@ -840,9 +906,11 @@ async def play_next(guild):
     await update_music_panel(guild.id)
     schedule_queue_prefetch(guild.id)
 
-async def handle_track_finished(guild, track: Track, error):
+async def handle_track_finished(guild, track: Track, error, generation: int):
     player = get_player(guild.id)
     async with player.lock:
+        if generation != player.playback_generation:
+            return
         if player.ignore_next_after:
             player.ignore_next_after = False
             return
@@ -1166,7 +1234,7 @@ async def on_voice_state_update(member, before, after):
     if after.channel:
         player.voice_channel_id = after.channel.id
         return
-    if not before.channel or player.skip_requested:
+    if not before.channel or player.manual_disconnect or player.skip_requested:
         return
 
     track_to_resume = None
@@ -1198,16 +1266,17 @@ async def on_voice_state_update(member, before, after):
 @app_commands.describe(sarki="Sarki adi, YouTube linki, Spotify linki veya playlist linki")
 async def oynat(interaction: discord.Interaction, sarki: str):
     if not interaction.user.voice:
-        await interaction.response.send_message("Bir ses kanalinda olman gerekiyor!", ephemeral=True)
+        await interaction.response.send_message("Bir ses kanalinda olman gerekiyor!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
 
     voice_channel = interaction.user.voice.channel
     guild = interaction.guild
     player = get_player(guild.id)
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     player.text_channel_id = interaction.channel.id
     player.voice_channel_id = voice_channel.id
+    player.manual_disconnect = False
     vc = guild.voice_client
     if vc is None:
         vc = await voice_channel.connect()
@@ -1224,7 +1293,7 @@ async def oynat(interaction: discord.Interaction, sarki: str):
         if is_spotify_playlist_url(sarki) or is_spotify_album_url(sarki):
             queries = await spotify_playlist_to_queries(sarki)
             if not queries:
-                await interaction.followup.send("Playlist bos veya bulunamadi.")
+                await send_temporary_followup(interaction, "Playlist bos veya bulunamadi.")
                 return
             tracks = [Track.search(q, requester_id, requester_name) for q in queries]
             start_message = f"{len(tracks)} sarkilik Spotify playlist basliyor."
@@ -1237,7 +1306,7 @@ async def oynat(interaction: discord.Interaction, sarki: str):
         elif is_url(sarki) and is_playlist_url(sarki):
             playlist_tracks = await fetch_playlist_yt(sarki)
             if not playlist_tracks:
-                await interaction.followup.send("Playlist bos veya bulunamadi.")
+                await send_temporary_followup(interaction, "Playlist bos veya bulunamadi.")
                 return
             tracks = [Track.url(video_url, title, requester_id, requester_name) for video_url, title in playlist_tracks]
             start_message = f"{len(tracks)} sarkilik YouTube playlist basliyor."
@@ -1267,33 +1336,24 @@ async def oynat(interaction: discord.Interaction, sarki: str):
         schedule_queue_prefetch(guild.id)
         if active:
             suffix = f" (Pozisyon: {position})" if len(tracks) == 1 else ""
-            await interaction.followup.send(queue_message + suffix)
-            await update_music_panel(guild.id)
+            await send_temporary_followup(interaction, queue_message + suffix)
         else:
-            await interaction.followup.send(start_message)
+            await send_temporary_followup(interaction, start_message)
             await play_next(guild)
+        await update_music_panel(guild.id, move_to_latest=True)
     except Exception as e:
         async with player.lock:
             player.starting = False
-        await interaction.followup.send(friendly_music_error(e))
+        await send_temporary_followup(interaction, friendly_music_error(e))
 
 @bot.tree.command(name="kapat", description="Sarkiyi kapatir ve ses kanalindan ayrilir")
 async def kapat(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    player = get_player(interaction.guild.id)
-    async with player.lock:
-        player.queue.clear()
-        player.current = None
-        player.starting = False
-        player.mode = "music"
-        player.skip_requested = True
-        if player.prefetch_task and not player.prefetch_task.done():
-            player.prefetch_task.cancel()
-    if vc:
-        await vc.disconnect()
-        await interaction.response.send_message("Kapatildi!")
-    else:
-        await interaction.response.send_message("Zaten bir ses kanalinda degilim.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    had_voice = interaction.guild.voice_client is not None
+    await stop_music_player(interaction.guild)
+    await update_music_panel(interaction.guild.id)
+    message = "Muzik kapatildi ve ses kanalindan ayrildim." if had_voice else "Zaten bir ses kanalinda degilim."
+    await send_temporary_followup(interaction, message)
 
 @bot.tree.command(name="atla", description="Sarkiyi atlar")
 @app_commands.describe(miktar="Kac sarki atlanacak (varsayilan 1)")
@@ -1301,31 +1361,31 @@ async def atla(interaction: discord.Interaction, miktar: int = 1):
     vc = interaction.guild.voice_client
     player = get_player(interaction.guild.id)
     if not vc or (not vc.is_playing() and not vc.is_paused()):
-        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
     async with player.lock:
         del player.queue[:min(max(miktar - 1, 0), len(player.queue))]
         player.skip_requested = True
     vc.stop()
-    await interaction.response.send_message(f"{miktar} sarki atlandi!" if miktar > 1 else "Atlandi!")
+    await interaction.response.send_message(f"{miktar} sarki atlandi!" if miktar > 1 else "Atlandi!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
 @bot.tree.command(name="duraklat", description="Sarkiyi duraklatir")
 async def duraklat(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("Duraklatildi!")
+        await interaction.response.send_message("Duraklatildi!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
     else:
-        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
 @bot.tree.command(name="devam", description="Duraklatilan sarkiyi devam ettirir")
 async def devam(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("Devam ediliyor!")
+        await interaction.response.send_message("Devam ediliyor!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
     else:
-        await interaction.response.send_message("Duraklatilmis bir sarki yok.", ephemeral=True)
+        await interaction.response.send_message("Duraklatilmis bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
 @bot.tree.command(name="sardir", description="Sarkiyi belirtilen saniyeye sarar")
 @app_commands.describe(saniye="Kacinci saniyeye sarilacak")
@@ -1333,7 +1393,7 @@ async def sardir(interaction: discord.Interaction, saniye: int):
     vc = interaction.guild.voice_client
     player = get_player(interaction.guild.id)
     if not vc or (not vc.is_playing() and not vc.is_paused()) or not player.current:
-        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
     guild = interaction.guild
     await interaction.response.defer()
@@ -1433,7 +1493,7 @@ async def muzikprofil(interaction: discord.Interaction):
 async def lyrics(interaction: discord.Interaction):
     title = get_current_title(interaction.guild.id)
     if not title:
-        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True)
+        await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
     await interaction.response.defer()
     try:
@@ -1694,7 +1754,7 @@ async def radyo_ara(isim: str) -> list[dict]:
 @app_commands.describe(isim="Radyo adi (orn: Kral FM, TRT Radyo 1, Power FM)")
 async def radyo(interaction: discord.Interaction, isim: str):
     if not interaction.user.voice:
-        await interaction.response.send_message("Bir ses kanalinda olman gerekiyor!", ephemeral=True)
+        await interaction.response.send_message("Bir ses kanalinda olman gerekiyor!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
 
     await interaction.response.defer()
