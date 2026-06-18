@@ -8,4 +8,6 @@ logs/
 ffmpeg.exe
 .spotify_*_cache
 music_stats.json
+music_metadata_cache.json
+music_playlists.json
 HoslafBotService.exe

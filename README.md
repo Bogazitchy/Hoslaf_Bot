@@ -1,207 +1,232 @@
 <div align="center">
 
-<img src="./assets/hoslaf-banner.png" alt="Hoşlaf Bot banner" width="100%">
+<img src="./assets/hoslaf-banner.png" alt="Hoslaf Bot banner" width="100%">
 
 <br>
 
-# HOŞLAF BOT
+# HOSLAF BOT
 
-### Discord sunucuları için müzik, eğlence ve bilgi asistanı
+### Discord sunuculari icin modern muzik, radyo, futbol, haber ve bilgi asistani
 
 <p>
-  YouTube, Spotify ve SoundCloud desteğini; radyo, futbol, haber,
-  yapay zekâ destekli arama ve tarih içerikleriyle tek botta buluşturur.
+  <strong>Kalici muzik paneli</strong>, <strong>playlist destegi</strong>,
+  <strong>kuyruk yonetimi</strong>, <strong>otomatik oneriler</strong> ve
+  <strong>canli bilgi komutlari</strong> tek botta.
 </p>
 
 <p>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/discord.py-2.7.1-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="discord.py 2.7.1">
-  <img src="https://img.shields.io/badge/FFmpeg-Audio-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="FFmpeg">
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-222222?style=for-the-badge" alt="Windows ve Linux">
+  <img src="https://img.shields.io/badge/discord.py-2.x-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="discord.py">
+  <img src="https://img.shields.io/badge/Audio-yt--dlp%20%2B%20FFmpeg-00A86B?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="yt-dlp + FFmpeg">
+  <img src="https://img.shields.io/badge/Spotify-Ready-1DB954?style=for-the-badge&logo=spotify&logoColor=white" alt="Spotify">
+  <img src="https://img.shields.io/badge/VPS-24%2F7-111111?style=for-the-badge&logo=linux&logoColor=white" alt="VPS">
 </p>
 
 <p>
-  <a href="#-özellikler">Özellikler</a> •
+  <a href="#-one-cikanlar">One Cikanlar</a> •
+  <a href="#-muzik-paneli">Muzik Paneli</a> •
   <a href="#-komutlar">Komutlar</a> •
   <a href="#-kurulum">Kurulum</a> •
-  <a href="#-yapılandırma">Yapılandırma</a> •
-  <a href="#-servis-olarak-çalıştırma">Servis</a>
+  <a href="#-guvenlik">Guvenlik</a>
 </p>
 
 </div>
 
 ---
 
-## Hoşlaf Bot Nedir?
+## Genel Bakis
 
-Hoşlaf Bot, Discord topluluklarının günlük ihtiyaçlarını tek bir uygulamada
-toplayan çok amaçlı bir bottur. Gelişmiş müzik kuyruğu ve kalıcı kontrol
-panelinin yanında canlı skor, lig bilgileri, radyo, haber, web araması ve
-tarihte bugün içerikleri sunar.
+Hoslaf Bot, Discord sunucularinda muzik dinlemeyi temiz, hizli ve kontrol
+edilebilir hale getirmek icin gelistirilmis cok amacli bir bottur. Muzik
+tarafinda YouTube, Spotify, SoundCloud ve radyo kaynaklarini destekler; bunun
+yaninda futbol, haber, web arama ve tarih komutlariyla sunucu ici gunluk
+ihtiyaclari tek noktada toplar.
 
-Botun müzik paneli aynı mesaj üzerinde güncellenir. Geçici komut yanıtları
-otomatik temizlenir; böylece sohbet kanalı gereksiz bot mesajlarıyla dolmaz.
+Botun en guclu tarafi kalici muzik panelidir. Her komutta yeni panel spam'i
+olusturmak yerine ayni panel guncellenir; gecici bilgilendirme mesajlari ise
+otomatik temizlenir. Boylece muzik kanali duzenli kalir.
 
 <div align="center">
-  <img src="./assets/hoslaf-logo.png" alt="Hoşlaf Bot logo" width="360">
+  <img src="./assets/hoslaf-logo.png" alt="Hoslaf Bot logo" width="360">
 </div>
 
-## Özellikler
+## One Cikanlar
 
 <table>
   <tr>
     <td width="50%">
-      <h3>🎵 Gelişmiş Müzik Sistemi</h3>
-      YouTube, YouTube playlist, Spotify şarkı/playlist/albüm ve SoundCloud
-      kaynaklarını destekler. Kuyruk ön yükleme, geçmiş, karıştırma, ses
-      kontrolü ve ileri sarma özellikleri içerir.
+      <h3>Modern Muzik Paneli</h3>
+      Tek mesaj uzerinden calan sarki, ilerleme cubugu, ses seviyesi, isteyen
+      kisi, tekrar modu, altyapi durumu ve kuyruk ozeti gorulur.
     </td>
     <td width="50%">
-      <h3>🎛️ Kalıcı Müzik Paneli</h3>
-      Çalan şarkıyı, isteyen kullanıcıyı, süreyi, ses seviyesini ve kuyruğu
-      tek panelde gösterir. Duraklat, devam et, atla, durdur ve ses
-      kontrolleri Türkçe butonlarla sunulur.
+      <h3>Dropdown Kontroller</h3>
+      Panel icinden kuyruktan sarki secilebilir, sarki kaldirilabilir, tekrar
+      modu degistirilebilir ve kayitli playlist baslatilabilir.
     </td>
   </tr>
   <tr>
     <td>
-      <h3>✨ Otomatik Öneri</h3>
-      Kuyruk sona erdiğinde benzer parçalar bulabilir. Yakın geçmişte çalınan
-      içerikleri mümkün olduğunca tekrar seçmez.
+      <h3>Playlist Sistemi</h3>
+      Sunucuya ozel muzik listeleri kaydedilebilir, listelenebilir, silinebilir
+      ve panel uzerinden tekrar baslatilabilir.
     </td>
     <td>
-      <h3>📻 İnternet Radyosu</h3>
-      Radio Browser üzerinden istasyon arar, sonuçları listeler ve seçilen
-      canlı yayını doğrudan ses kanalında oynatır.
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <h3>⚽ Futbol Merkezi</h3>
-      Günün maçları, canlı skorlar, lig bazlı karşılaşmalar, puan durumu ve
-      Şampiyonlar Ligi turnuva ağacını gösterir.
-    </td>
-    <td>
-      <h3>📰 Bilgi ve Gündem</h3>
-      Türkiye gündeminden haberler, Exa AI destekli web araması ve Wikipedia
-      tabanlı tarihte bugün içerikleri sağlar.
+      <h3>Tekrar Modlari</h3>
+      Kapali, sarki tekrari ve kuyruk tekrari desteklenir. Panelde anlik mod
+      acik sekilde gosterilir.
     </td>
   </tr>
   <tr>
     <td>
-      <h3>📊 Kişisel Müzik Profili</h3>
-      Kullanıcıların eklediği şarkı sayısını, toplam dinleme süresini ve en
-      sık tercih edilen şarkı ve sanatçıları takip eder.
+      <h3>Metadata Cache</h3>
+      Sik aranan sarkilarin baslik, sure, thumbnail ve kaynak bilgileri cache'e
+      alinir. Tekrar eden komutlarda cozumleme daha hizli olur.
     </td>
     <td>
-      <h3>🛡️ Sürekli Çalışma</h3>
-      Windows servis dosyaları, otomatik başlatma görevleri ve çalışma
-      günlükleriyle kesintisiz kullanım için hazırlanmıştır.
+      <h3>Reconnect Resume</h3>
+      Bot ses kanalindan dustugunde calan sarkiyi yaklasik kaldigi pozisyona
+      gore tekrar siraya alarak toparlanmayi kolaylastirir.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <h3>Radyo ve Guncel Bilgi</h3>
+      Internet radyolari, canli maclar, lig puan durumlari, haberler, web arama
+      ve tarihte bugun komutlari bulunur.
+    </td>
+    <td>
+      <h3>24/7 Calisma</h3>
+      Linux VPS systemd servisi ve Windows servis yardimcilariyla surekli
+      calisma senaryosuna uygundur.
     </td>
   </tr>
 </table>
 
-## Müzik Paneli
+## Muzik Paneli
 
-Panel, her yeni komutta ayrı bir mesaj üretmek yerine mevcut mesajını
-günceller. Böylece kanal düzenli kalırken kontroller her zaman erişilebilir
-olur.
+Panel, muzik kanalini temiz tutmak icin ayni mesaj uzerinde guncellenir.
+Butonlar ve secim menuleri tek panelde toplanir.
 
-| Kontrol | İşlev |
+```text
+Simdi caliyor: Batuflex & Era7capone - Gasolina
+
+Ilerleme
+01:24 =======o----------- 03:45
+
+Ses: %80
+Isteyen: melihwastaken
+Tekrar: Kuyruk
+Altyapi: FFmpeg
+```
+
+### Panel Kontrolleri
+
+| Kontrol | Islev |
 | --- | --- |
-| **Duraklat / Devam** | Oynatmayı duraklatır veya kaldığı yerden sürdürür. |
-| **Atla** | Çalan parçayı geçip sıradaki parçaya devam eder. |
-| **Durdur** | Kuyruğu temizler ve aktif oynatmayı güvenli biçimde sonlandırır. |
-| **Ses - / Ses +** | Ses seviyesini panel üzerinden değiştirir. |
+| Duraklat / Devam | Oynatmayi duraklatir veya kaldigi yerden surdurur. |
+| Atla | Calan parcayi gecip siradaki parcaya devam eder. |
+| Durdur | Aktif oynatmayi ve kuyrugu temizler. |
+| Kuyruk | Kuyrugun detayli gorunumunu acar. |
+| Ses - / Ses + | Ses seviyesini panelden degistirir. |
+| Kuyruktan sarki sec | Bekleyen sarkilardan birini one alir ve calar. |
+| Sarkiyi kuyruktan kaldir | Secilen parcayi kuyruktan siler. |
+| Tekrar modu sec | Kapali, sarki veya kuyruk tekrari arasinda gecis yapar. |
+| Playlist baslat | Sunucuya kayitli playlistlerden birini baslatir. |
 
-Panelde ayrıca şunlar gösterilir:
+## Muzik Ozellikleri
 
-- Çalan parça ve bağlantısı
-- Parçayı isteyen kullanıcı
-- Parça süresi ve ses seviyesi
-- Sıradaki parçaların özeti
-- Toplam kuyruk süresi
-- Otomatik öneri durumu
+- YouTube video ve playlist destegi
+- Spotify sarki, album ve playlist cozumleme
+- SoundCloud link destegi
+- Radio Browser ile internet radyosu arama
+- Kuyruk on yukleme
+- Kuyruk karistirma
+- Sarki gecmisi
+- Sarki sozu arama
+- Otomatik oneriler
+- Kullanici muzik profili
+- Sunucuya ozel playlist kayitlari
+- Metadata cache
+- Ses kanali kopmalarinda toparlanma
+
+> Not: Lavalink icin ortam degiskeni algilama ve panelde altyapi gostergesi
+> hazirdir. Tam Lavalink player gecisi ayri bir mimari tasima olarak
+> planlanmistir.
 
 ## Komutlar
 
-### Müzik
+### Muzik
 
-| Komut | Açıklama |
+| Komut | Aciklama |
 | --- | --- |
-| `/oynat sarki` | Şarkı adı veya desteklenen bağlantı üzerinden müzik çalar. |
-| `/kapat` | Oynatmayı kapatır ve botu ses kanalından çıkarır. |
-| `/atla miktar` | Çalan parçayı veya belirtilen sayıda parçayı atlar. |
-| `/duraklat` | Aktif parçayı duraklatır. |
-| `/devam` | Duraklatılan parçayı devam ettirir. |
-| `/sardir saniye` | Parçayı belirtilen saniyeye taşır. |
-| `/karistir` | Bekleyen müzik kuyruğunu karıştırır. |
-| `/ses seviye` | Ses seviyesini 0-100 arasında ayarlar. |
-| `/kuyruk` | Çalan parça ve sıradaki parçaları gösterir. |
-| `/gecmis` | Son çalınan parçaları listeler. |
-| `/otomatik ac\|kapat` | Kuyruk sonrası otomatik öneriyi yönetir. |
-| `/muzikprofil` | Kullanıcının müzik istatistiklerini gösterir. |
-| `/lyrics` | Çalan parçanın sözlerini getirir. |
-
-> Discord slash komutları Türkçe karakter kabul etmediği için `gecmis`,
-> `sardir` ve `muzikprofil` gibi komutlar ASCII karakterlerle yazılır.
+| `/oynat sarki` | Sarki adi, YouTube/Spotify/SoundCloud linki veya playlist calar. |
+| `/kapat` | Muzigi kapatir, kuyrugu temizler ve ses kanalindan ayrilir. |
+| `/atla miktar` | Calan parcayi veya belirtilen sayida parcayi atlar. |
+| `/duraklat` | Aktif parcayi duraklatir. |
+| `/devam` | Duraklatilan parcayi devam ettirir. |
+| `/sardir saniye` | Parcayi belirtilen saniyeye sarar. |
+| `/karistir` | Kuyrugu karistirir. |
+| `/ses seviye` | Ses seviyesini 0-100 arasinda ayarlar. |
+| `/kuyruk` | Calan parca ve siradaki parcalari gosterir. |
+| `/gecmis` | Son calinan sarkilari listeler. |
+| `/otomatik ac/kapat` | Kuyruk bittiginde otomatik oneriyi acar veya kapatir. |
+| `/tekrar mod` | Kapali, sarki veya kuyruk tekrar modunu secer. |
+| `/playlistkaydet ad` | Mevcut calan sarki ve kuyrugu playlist olarak kaydeder. |
+| `/playlistler` | Sunucudaki kayitli playlistleri listeler. |
+| `/playlistsil ad` | Kayitli playlisti siler. |
+| `/muzikprofil` | Kullanici muzik istatistiklerini gosterir. |
+| `/lyrics` | Calan sarkinin sozlerini getirir. |
 
 ### Radyo
 
-| Komut | Açıklama |
+| Komut | Aciklama |
 | --- | --- |
-| `/radyo isim` | İstasyon arar ve en uygun sonucu oynatır. |
-| `/radyolar isim` | Eşleşen radyo istasyonlarını seçim listesiyle gösterir. |
-
-```text
-/radyo Kral FM
-/radyo Power FM
-/radyolar rock
-```
+| `/radyo isim` | Radyo arar ve en uygun sonucu oynatir. |
+| `/radyolar isim` | Birden fazla radyo sonucunu secim listesiyle gosterir. |
 
 ### Futbol
 
-| Komut | Açıklama |
+| Komut | Aciklama |
 | --- | --- |
-| `/bugun` | Bugünün maç takvimini gösterir. |
-| `/canli` | Devam eden karşılaşmaların canlı skorlarını gösterir. |
-| `/lig lig` | Seçilen ligin bugünkü maçlarını listeler. |
-| `/puandurumu lig` | Seçilen ligin puan durumunu gösterir. |
-| `/turnuva` | Şampiyonlar Ligi turnuva ağacını gösterir. |
-
-Desteklenen organizasyonlar: Premier League, La Liga, Bundesliga, Serie A,
-Ligue 1 ve UEFA Şampiyonlar Ligi.
+| `/bugun` | Bugunun mac takvimini gosterir. |
+| `/canli` | Devam eden karsilasmalarin skorlarini gosterir. |
+| `/lig lig` | Secilen ligin bugunku maclarini listeler. |
+| `/puandurumu lig` | Secilen ligin puan durumunu gosterir. |
+| `/turnuva` | Sampiyonlar Ligi turnuva agacini gosterir. |
 
 ### Haber, Arama ve Tarih
 
-| Komut | Açıklama |
+| Komut | Aciklama |
 | --- | --- |
-| `/haber` | Türkiye gündeminden güncel haberleri getirir. |
-| `/ara sorgu` | Exa AI üzerinden web araması yapar. |
-| `/tarihtebugun` | Bugünün tarihsel olaylarını gösterir. |
-| `/tarihsorgu ay gun` | Belirli bir tarihte yaşanan olayları getirir. |
-| `/rastgeletarih` | Rastgele bir güne ait tarihsel olayları gösterir. |
+| `/haber` | Turkiye gundeminden haberleri getirir. |
+| `/ara sorgu` | Exa AI ile web aramasi yapar. |
+| `/tarihtebugun` | Bugunun tarihsel olaylarini gosterir. |
+| `/tarihsorgu ay gun` | Belirli bir tarihte yasanan olaylari getirir. |
+| `/rastgeletarih` | Rastgele bir gunun tarihsel olaylarini gosterir. |
 
 ## Kurulum
 
 ### Gereksinimler
 
-- Python 3.10 veya üzeri
+- Python 3.10 veya uzeri
 - FFmpeg
-- Discord uygulaması ve bot tokenı
-- Kullanılacak özelliklere ait API anahtarları
-- Sesli bağlantı için Discord botunda gerekli izinler
+- Discord bot tokeni
+- Spotify API bilgileri
+- Genius API tokeni
+- Exa API anahtari
+- Futbol verileri icin API-Football ve Football-Data anahtarlari
 
-### 1. Depoyu Klonla
+### Depoyu Klonla
 
 ```bash
 git clone https://github.com/Bogazitchy/Hoslaf_Bot.git
 cd Hoslaf_Bot
 ```
 
-### 2. Sanal Ortamı Oluştur
+### Sanal Ortami Kur
 
-**Windows**
+Windows:
 
 ```powershell
 python -m venv .venv
@@ -209,7 +234,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-**Linux**
+Linux:
 
 ```bash
 python3 -m venv .venv
@@ -217,34 +242,18 @@ python3 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements.txt
 ```
 
-### 3. FFmpeg'i Hazırla
-
-FFmpeg sistem PATH değişkeninde bulunabilir veya çalıştırma ortamına uygun
-biçimde proje tarafından erişilebilir olmalıdır.
-
-Kontrol:
+### FFmpeg Kontrolu
 
 ```bash
 ffmpeg -version
 ```
 
-### 4. Botu Başlat
+FFmpeg sistem PATH icinde bulunmali veya calisma ortamindan erisilebilir
+olmalidir.
 
-**Windows**
+### Ortam Degiskenleri
 
-```powershell
-.\.venv\Scripts\python.exe bot.py
-```
-
-**Linux**
-
-```bash
-./.venv/bin/python bot.py
-```
-
-## Yapılandırma
-
-Proje kökünde `.env` dosyası oluştur:
+Proje kokunde `.env` dosyasi olustur:
 
 ```env
 DISCORD_TOKEN=discord_bot_token
@@ -257,57 +266,99 @@ GENIUS_TOKEN=genius_token
 EXA_API_KEY=exa_api_key
 APIF_KEY=api_football_key
 FD_KEY=football_data_key
+
+# Opsiyonel Lavalink hazirligi
+LAVALINK_HOST=127.0.0.1
+LAVALINK_PORT=2333
+LAVALINK_PASSWORD=youshallnotpass
 ```
 
-| Değişken | Kullanım |
+| Degisken | Kullanim |
 | --- | --- |
-| `DISCORD_TOKEN` | Discord botunun kimlik doğrulaması |
-| `SPOTIFY_CLIENT_ID` | Spotify katalog erişimi |
-| `SPOTIFY_CLIENT_SECRET` | Spotify uygulama doğrulaması |
-| `SPOTIFY_REDIRECT_URI` | Kullanıcı playlist yetkilendirme dönüş adresi |
-| `GENIUS_TOKEN` | Şarkı sözü araması |
-| `EXA_API_KEY` | Yapay zekâ destekli web araması |
-| `APIF_KEY` | API-Football canlı maç verileri |
-| `FD_KEY` | Football-Data lig ve puan durumu verileri |
+| `DISCORD_TOKEN` | Discord bot kimlik dogrulamasi |
+| `SPOTIFY_CLIENT_ID` | Spotify katalog erisimi |
+| `SPOTIFY_CLIENT_SECRET` | Spotify uygulama dogrulamasi |
+| `SPOTIFY_REDIRECT_URI` | Spotify yetkilendirme donus adresi |
+| `GENIUS_TOKEN` | Sarki sozu aramasi |
+| `EXA_API_KEY` | Web arama ozelligi |
+| `APIF_KEY` | API-Football verileri |
+| `FD_KEY` | Football-Data verileri |
+| `LAVALINK_*` | Gelecek Lavalink player gecisi icin hazirlik |
 
-### API Panelleri
+### Botu Baslat
 
-- [Discord Developer Portal](https://discord.com/developers/applications)
-- [Spotify for Developers](https://developer.spotify.com/dashboard)
-- [Genius API](https://genius.com/api-clients)
-- [Exa Dashboard](https://dashboard.exa.ai)
-- [API-Football](https://api-sports.io)
-- [Football-Data](https://www.football-data.org)
+Windows:
+
+```powershell
+.\.venv\Scripts\python.exe bot.py
+```
+
+Linux:
+
+```bash
+./.venv/bin/python bot.py
+```
 
 ## Spotify Playlist Yetkilendirmesi
 
-Bazı Spotify playlistleri kullanıcı yetkilendirmesi gerektirir.
+Bazi Spotify playlistleri kullanici yetkilendirmesi gerektirir.
 
-1. Spotify Developer Dashboard içinde Redirect URI olarak
+1. Spotify Developer Dashboard icinde Redirect URI olarak
    `http://127.0.0.1:8888/callback` adresini ekle.
-2. Yetkilendirme aracını çalıştır:
+2. Yetkilendirme aracini calistir:
 
 ```powershell
 .\.venv\Scripts\python.exe spotify_authorize.py
 ```
 
-3. Terminalde verilen bağlantıyı tarayıcıda aç ve Spotify izin ekranını onayla.
-4. Yönlendirildiğin tam adresi terminale yapıştır.
+3. Terminalde verilen baglantiyi tarayicida ac.
+4. Spotify izin ekranini onayla.
+5. Yonlendirildigin tam adresi terminale yapistir.
 
-Başarılı işlem sonunda `.spotify_user_cache` oluşturulur. Bu dosya gizlidir
-ve Git deposuna yüklenmemelidir.
+Basarili islem sonunda `.spotify_user_cache` olusur. Bu dosya repoya
+yuklenmemelidir.
 
-## Servis Olarak Çalıştırma
+## Servis Olarak Calistirma
+
+### Linux VPS
+
+Ornek systemd servis yapisi:
+
+```ini
+[Unit]
+Description=Hoslaf Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hoslafbot
+Group=hoslafbot
+WorkingDirectory=/opt/hoslafbot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/hoslafbot/.venv/bin/python /opt/hoslafbot/bot.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/hoslafbot
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Kontrol:
+
+```bash
+systemctl status hoslafbot.service
+journalctl -u hoslafbot.service -n 100 --no-pager
+```
 
 ### Windows
 
-Depoda WinSW tabanlı servis yapılandırması ve otomatik başlatma yardımcıları
-bulunur. `HoslafBotService.exe` güvenlik ve boyut nedeniyle repoya eklenmez.
-
-1. WinSW x64 sürümünü indir.
-2. Dosyayı `HoslafBotService.exe` olarak yeniden adlandır.
-3. Proje köküne yerleştir.
-4. Yönetici PowerShell aç ve çalıştır:
+Depoda WinSW tabanli servis yardimcilari bulunur.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -315,22 +366,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\register_hoslafbot_startup_task.ps1
 ```
 
-Servis kontrolü:
+Guncelleme sonrasi kontrol:
 
 ```powershell
 sc.exe query HoslafBot
-sc.exe qc HoslafBot
 ```
 
-Günlük dosyaları:
-
-```text
-logs/hoslafbot-runner.log
-logs/hoslafbot-process.out.log
-logs/hoslafbot-process.err.log
-```
-
-## Proje Yapısı
+## Proje Yapisi
 
 ```text
 Hoslaf_Bot/
@@ -351,40 +393,61 @@ Hoslaf_Bot/
 └── README.md
 ```
 
-## Güvenlik
+## Calisma Zamani Dosyalari
 
-- `.env` dosyasını ve Discord tokenını hiçbir zaman paylaşma.
-- Token yanlışlıkla açığa çıktıysa Discord Developer Portal üzerinden hemen
-  yenile.
-- `.spotify_user_cache` ve `.spotify_client_cache` dosyalarını repoya ekleme.
-- `music_stats.json` kullanıcı istatistikleri içerdiğinden gizli tutulur.
-- Log dosyalarını paylaşmadan önce token, kullanıcı ve sunucu bilgilerini
+Bu dosyalar calisma sirasinda olusur ve repoya yuklenmez:
+
+```text
+.env
+.spotify_user_cache
+.spotify_client_cache
+music_stats.json
+music_metadata_cache.json
+music_playlists.json
+logs/
+```
+
+## Guvenlik
+
+- `.env` dosyasini ve Discord tokenini asla repoya yukleme.
+- Token aciga cikarsa Discord Developer Portal uzerinden hemen yenile.
+- Spotify cache dosyalarini paylasma.
+- `music_stats.json`, `music_metadata_cache.json` ve `music_playlists.json`
+  sunucuya ait kullanim verileri icerebilir.
+- Log dosyalarini paylasmadan once token, kullanici ve sunucu bilgilerini
   kontrol et.
-- Bot hesabına yalnızca ihtiyaç duyduğu Discord izinlerini ver.
+- Bot davet linkinde yalnizca gerekli izinleri ver.
 
-`.gitignore` bu çalışma zamanı dosyalarını varsayılan olarak dışarıda tutar.
-
-## Kullanılan Teknolojiler
+## Kullanilan Teknolojiler
 
 <p>
-  <img src="https://skillicons.dev/icons?i=python,discord,git,github,powershell" alt="Kullanılan teknolojiler">
+  <img src="https://skillicons.dev/icons?i=python,discord,git,github,powershell,linux" alt="Kullanilan teknolojiler">
 </p>
 
-- **discord.py**: Discord API, slash komutlar ve etkileşimli bileşenler
-- **yt-dlp + FFmpeg**: Medya çözümleme ve ses aktarımı
-- **Spotipy**: Spotify içerik çözümleme
-- **aiohttp + requests**: Harici servis bağlantıları
-- **Genius API**: Şarkı sözleri
-- **Exa AI**: Web araması
-- **API-Football / Football-Data**: Futbol verileri
-- **WinSW + PowerShell**: Windows servis yönetimi
+- `discord.py`: Slash komutlar, butonlar, dropdownlar ve ses baglantisi
+- `yt-dlp`: YouTube, SoundCloud ve medya cozumleme
+- `FFmpeg`: Ses aktarimi
+- `Spotipy`: Spotify icerik cozumleme
+- `aiohttp` ve `requests`: Harici API istekleri
+- `Genius`: Sarki sozleri
+- `Exa AI`: Web aramasi
+- `API-Football` ve `Football-Data`: Futbol verileri
+- `systemd` ve `WinSW`: Servis olarak calisma
+
+## Yol Haritasi
+
+- Tam Lavalink player gecisi
+- Web tabanli yonetim paneli
+- Sunucu bazli ayar paneli
+- Daha gelismis izin sistemi
+- Daha detayli muzik istatistikleri
 
 ## Yasal Sayfalar
 
-- [Gizlilik Politikası](./privacy.html)
-- [Kullanım Koşulları](./terms.html)
+- [Gizlilik Politikasi](./privacy.html)
+- [Kullanim Kosullari](./terms.html)
 
-## Geliştirici
+## Gelistirici
 
 <div align="center">
 
@@ -393,6 +456,6 @@ Hoslaf_Bot/
 [![GitHub](https://img.shields.io/badge/GitHub-Bogazitchy-181717?style=for-the-badge&logo=github)](https://github.com/Bogazitchy)
 [![Website](https://img.shields.io/badge/Web-itchy.com.tr-0A7B45?style=for-the-badge&logo=googlechrome&logoColor=white)](https://itchy.com.tr)
 
-<sub>Hoşlaf Bot, topluluk deneyimini sade ve güçlü araçlarla geliştirmek için hazırlanmıştır.</sub>
+<sub>Hoslaf Bot, Discord sunucularinda temiz muzik deneyimi ve pratik bilgi komutlari icin gelistirilmistir.</sub>
 
 </div>

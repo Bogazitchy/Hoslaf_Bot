@@ -94,6 +94,13 @@ FFMPEG_OPTS = {
     "options": "-vn",
 }
 executor = ThreadPoolExecutor(max_workers=4)
+METADATA_CACHE_FILE = "music_metadata_cache.json"
+MUSIC_PLAYLISTS_FILE = "music_playlists.json"
+METADATA_CACHE_TTL = 60 * 60 * 24 * 7
+PROGRESS_BAR_LENGTH = 18
+LAVALINK_HOST = os.getenv("LAVALINK_HOST")
+LAVALINK_PORT = os.getenv("LAVALINK_PORT")
+LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD")
 
 # ── Futbol Sabitleri ──────────────────────────────────────────────────────────
 FD_LEAGUES = {
@@ -133,6 +140,8 @@ class HoslafBot(discord.Client):
         gunluk_haber.start()
         daily_schedule_task.start()
         gunluk_wiki.start()
+        if not music_progress_task.is_running():
+            music_progress_task.start()
         print("Slash komutları senkronize edildi.")
 
 bot = HoslafBot()
@@ -151,6 +160,7 @@ class Track:
     requester_name: str | None = None
     resolved: bool = False
     attempts: int = 0
+    resume_at: int = 0
 
     @classmethod
     def search(cls, query: str, requester_id: int | None = None, requester_name: str | None = None):
@@ -174,6 +184,7 @@ class Track:
             requester_id=requester_id,
             requester_name=requester_name,
             resolved=True,
+            resume_at=metadata.get("resume_at", 0) or 0,
         )
 
     @property
@@ -202,7 +213,11 @@ class Track:
             "thumbnail": self.thumbnail,
             "duration": self.duration,
             "uploader": self.uploader,
+            "resume_at": self.resume_at,
         }
+
+    def cache_key(self):
+        return normalize_track_title(self.webpage_url or self.query)
 
 @dataclass
 class MusicPlayer:
@@ -220,10 +235,14 @@ class MusicPlayer:
     manual_disconnect: bool = False
     ignore_next_after: bool = False
     autoplay: bool = False
+    repeat_mode: str = "off"
     history: list[Track] = field(default_factory=list)
     panel_message_id: int | None = None
     playback_generation: int = 0
     idle_task: asyncio.Task | None = None
+    current_started_at: float | None = None
+    current_elapsed_offset: int = 0
+    paused_at: float | None = None
 
 players: dict[int, MusicPlayer] = {}
 MUSIC_STATS_FILE = "music_stats.json"
@@ -245,6 +264,70 @@ def load_music_stats():
 def save_music_stats(stats):
     with open(MUSIC_STATS_FILE, "w", encoding="utf-8") as stats_file:
         json.dump(stats, stats_file, ensure_ascii=False, indent=2)
+
+def load_json_file(path, fallback):
+    try:
+        with open(path, "r", encoding="utf-8") as data_file:
+            data = json.load(data_file)
+            return data if isinstance(data, type(fallback)) else fallback
+    except (FileNotFoundError, ValueError):
+        return fallback
+
+def save_json_file(path, data):
+    with open(path, "w", encoding="utf-8") as data_file:
+        json.dump(data, data_file, ensure_ascii=False, indent=2)
+
+def get_cached_metadata(key: str):
+    cache = load_json_file(METADATA_CACHE_FILE, {})
+    item = cache.get(key)
+    if not item:
+        return None
+    if time.time() - float(item.get("cached_at", 0)) > METADATA_CACHE_TTL:
+        cache.pop(key, None)
+        save_json_file(METADATA_CACHE_FILE, cache)
+        return None
+    metadata = item.get("metadata")
+    return metadata if isinstance(metadata, dict) else None
+
+def set_cached_metadata(key: str, metadata: dict):
+    if not key or not metadata:
+        return
+    cache = load_json_file(METADATA_CACHE_FILE, {})
+    cache[key] = {"cached_at": time.time(), "metadata": metadata}
+    if len(cache) > 600:
+        for old_key, _ in sorted(cache.items(), key=lambda item: item[1].get("cached_at", 0))[:100]:
+            cache.pop(old_key, None)
+    save_json_file(METADATA_CACHE_FILE, cache)
+
+def load_music_playlists():
+    return load_json_file(MUSIC_PLAYLISTS_FILE, {})
+
+def save_music_playlists(playlists):
+    save_json_file(MUSIC_PLAYLISTS_FILE, playlists)
+
+def serialize_track(track: Track):
+    return {
+        "source": track.source,
+        "query": track.query,
+        "title": track.title,
+        "webpage_url": track.webpage_url,
+        "thumbnail": track.thumbnail,
+        "duration": track.duration,
+        "uploader": track.uploader,
+    }
+
+def deserialize_track(data: dict, requester_id: int | None = None, requester_name: str | None = None):
+    return Track(
+        source=data.get("source") or "search",
+        query=data.get("query") or data.get("webpage_url") or data.get("title") or "Bilinmeyen sarki",
+        title=data.get("title"),
+        webpage_url=data.get("webpage_url"),
+        thumbnail=data.get("thumbnail"),
+        duration=data.get("duration"),
+        uploader=data.get("uploader"),
+        requester_id=requester_id,
+        requester_name=requester_name,
+    )
 
 def record_music_stat(guild_id: int, track: Track):
     if not track.requester_id:
@@ -530,8 +613,15 @@ async def resolve_queue_item(item):
 async def resolve_track(track: Track, *, refresh_audio: bool = False):
     if track.resolved and track.audio_url and not refresh_audio:
         return track
+    cache_key = track.cache_key()
+    if not refresh_audio:
+        cached = get_cached_metadata(cache_key)
+        if cached:
+            track.update_from_metadata(cached)
+            return track
     metadata = await fetch_audio(track.resolve_query())
     track.update_from_metadata(metadata)
+    set_cached_metadata(cache_key, metadata)
     return track
 
 async def prefetch_queue(guild_id):
@@ -567,6 +657,39 @@ def format_duration(seconds):
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
+
+def current_position(player: MusicPlayer):
+    if not player.current:
+        return 0
+    elapsed = int(player.current_elapsed_offset or 0)
+    if player.paused_at:
+        return elapsed
+    if player.current_started_at:
+        elapsed += max(0, int(time.monotonic() - player.current_started_at))
+    if player.current.duration:
+        return min(elapsed, int(player.current.duration))
+    return elapsed
+
+def build_progress_bar(player: MusicPlayer):
+    current = player.current
+    if not current:
+        return "Beklemede"
+    elapsed = current_position(player)
+    duration = int(current.duration or 0)
+    if duration <= 0:
+        return f"{format_duration(elapsed)} ======o====== Bilinmiyor"
+    ratio = max(0, min(1, elapsed / duration))
+    cursor_index = min(PROGRESS_BAR_LENGTH - 1, int(ratio * PROGRESS_BAR_LENGTH))
+    bar = "".join("o" if i == cursor_index else ("=" if i < cursor_index else "-") for i in range(PROGRESS_BAR_LENGTH))
+    return f"{format_duration(elapsed)} {bar} {format_duration(duration)}"
+
+def ffmpeg_options_for_seek(seconds: int = 0):
+    if seconds and seconds > 0:
+        return {
+            "before_options": f"{FFMPEG_OPTS['before_options']} -ss {int(seconds)}",
+            "options": FFMPEG_OPTS["options"],
+        }
+    return FFMPEG_OPTS
 
 def total_queue_duration(player: MusicPlayer):
     known = sum(int(track.duration or 0) for track in player.queue)
@@ -651,7 +774,7 @@ def build_music_panel_embed(player: MusicPlayer):
         title = current.display_title
         url = current.webpage_url
         embed.description = f"**[{title}]({url})**" if url else f"**{title}**"
-        embed.add_field(name="Sure", value=format_duration(current.duration), inline=True)
+        embed.add_field(name="Ilerleme", value=build_progress_bar(player), inline=False)
         embed.add_field(name="Ses", value=f"%{int(player.volume * 100)}", inline=True)
         embed.add_field(name="Isteyen", value=requester_label(current), inline=True)
         if current.thumbnail:
@@ -666,6 +789,10 @@ def build_music_panel_embed(player: MusicPlayer):
     embed.add_field(name="Kuyruk", value="\n".join(queue_preview) if queue_preview else "Kuyruk bos.", inline=False)
     embed.add_field(name="Toplam Kuyruk", value=total_queue_duration(player), inline=True)
     embed.add_field(name="Otomatik Oneri", value="Acik" if player.autoplay else "Kapali", inline=True)
+    repeat_labels = {"off": "Kapali", "track": "Sarki", "queue": "Kuyruk"}
+    embed.add_field(name="Tekrar", value=repeat_labels.get(player.repeat_mode, "Kapali"), inline=True)
+    backend = "Lavalink hazir" if LAVALINK_HOST and LAVALINK_PORT and LAVALINK_PASSWORD else "FFmpeg"
+    embed.add_field(name="Altyapi", value=backend, inline=True)
     embed.set_footer(text=f"{len(player.queue)} sarki sirada")
     return embed
 
@@ -770,10 +897,132 @@ async def update_music_panel(guild_id: int, move_to_latest: bool = False):
     message = await channel.send(embed=embed, view=view)
     player.panel_message_id = message.id
 
+@tasks.loop(seconds=30)
+async def music_progress_task():
+    for guild_id, player in list(players.items()):
+        guild = bot.get_guild(guild_id)
+        vc = guild.voice_client if guild else None
+        if player.current and vc and (vc.is_playing() or vc.is_paused()):
+            try:
+                await update_music_panel(guild_id)
+            except Exception as exc:
+                print(f"Muzik panel ilerleme guncelleme hatasi: {exc}")
+
+@music_progress_task.before_loop
+async def before_music_progress_task():
+    await bot.wait_until_ready()
+
+def option_label(text: str, limit: int = 90):
+    text = re.sub(r"\s+", " ", text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "..."
+
+class QueuePlaySelect(discord.ui.Select):
+    def __init__(self, guild_id: int, queue: list[Track]):
+        options = [
+            discord.SelectOption(label=option_label(track.display_title), value=str(index), description=f"{index + 1}. siradan hemen cal")
+            for index, track in enumerate(queue[:25])
+        ]
+        super().__init__(placeholder="Kuyruktan sarki sec ve hemen cal", min_values=1, max_values=1, options=options, row=1)
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        player = get_player(self.guild_id)
+        vc = interaction.guild.voice_client if interaction.guild else None
+        index = int(self.values[0])
+        async with player.lock:
+            if index >= len(player.queue):
+                await interaction.response.send_message("Bu sarki artik kuyrukta yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+                return
+            selected = player.queue.pop(index)
+            player.queue.insert(0, selected)
+            player.skip_requested = True
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+            await interaction.response.send_message("Secilen sarki siradaki parca olarak baslatiliyor.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+        else:
+            await interaction.response.defer(ephemeral=True)
+            await play_next(interaction.guild)
+        await update_music_panel(self.guild_id)
+
+class QueueRemoveSelect(discord.ui.Select):
+    def __init__(self, guild_id: int, queue: list[Track]):
+        options = [
+            discord.SelectOption(label=option_label(track.display_title), value=str(index), description=f"{index + 1}. siradan kaldir")
+            for index, track in enumerate(queue[:25])
+        ]
+        super().__init__(placeholder="Kuyruktan sarki kaldir", min_values=1, max_values=1, options=options, row=2)
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        player = get_player(self.guild_id)
+        index = int(self.values[0])
+        async with player.lock:
+            if index >= len(player.queue):
+                await interaction.response.send_message("Bu sarki artik kuyrukta yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+                return
+            removed = player.queue.pop(index)
+        await update_music_panel(self.guild_id)
+        await interaction.response.send_message(f"Kuyruktan kaldirildi: {removed.display_title}", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+
+class RepeatModeSelect(discord.ui.Select):
+    def __init__(self, guild_id: int, current_mode: str):
+        options = [
+            discord.SelectOption(label="Tekrar kapali", value="off", default=current_mode == "off"),
+            discord.SelectOption(label="Sarkiyi tekrar et", value="track", default=current_mode == "track"),
+            discord.SelectOption(label="Kuyrugu tekrar et", value="queue", default=current_mode == "queue"),
+        ]
+        super().__init__(placeholder="Tekrar modu sec", min_values=1, max_values=1, options=options, row=3)
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        player = get_player(self.guild_id)
+        player.repeat_mode = self.values[0]
+        await update_music_panel(self.guild_id)
+        labels = {"off": "Tekrar kapali", "track": "Sarki tekrar edilecek", "queue": "Kuyruk tekrar edilecek"}
+        await interaction.response.send_message(labels[player.repeat_mode], ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+
+class PlaylistStartSelect(discord.ui.Select):
+    def __init__(self, guild_id: int, playlists: dict):
+        guild_playlists = playlists.get(str(guild_id), {})
+        options = [
+            discord.SelectOption(label=option_label(name), value=name, description=f"{len(items)} sarki")
+            for name, items in list(guild_playlists.items())[:25]
+        ]
+        super().__init__(placeholder="Kayitli playlist baslat", min_values=1, max_values=1, options=options, row=4)
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        player = get_player(self.guild_id)
+        vc = interaction.guild.voice_client if interaction.guild else None
+        playlists = load_music_playlists()
+        items = playlists.get(str(self.guild_id), {}).get(self.values[0], [])
+        if not items:
+            await interaction.response.send_message("Playlist bos veya bulunamadi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+            return
+        tracks = [deserialize_track(item, interaction.user.id, interaction.user.display_name) for item in items]
+        async with player.lock:
+            player.queue.extend(tracks)
+            should_start = not is_playback_active(player, vc)
+            if should_start:
+                player.starting = True
+        await interaction.response.send_message(f"{len(tracks)} sarkilik playlist kuyruga eklendi: {self.values[0]}", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+        schedule_queue_prefetch(self.guild_id)
+        if should_start:
+            await play_next(interaction.guild)
+        await update_music_panel(self.guild_id)
+
 class NowPlayingView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
         self.guild_id = guild_id
+        player = get_player(guild_id)
+        if player.queue:
+            self.add_item(QueuePlaySelect(guild_id, player.queue))
+            self.add_item(QueueRemoveSelect(guild_id, player.queue))
+        self.add_item(RepeatModeSelect(guild_id, player.repeat_mode))
+        playlists = load_music_playlists()
+        if playlists.get(str(guild_id)):
+            self.add_item(PlaylistStartSelect(guild_id, playlists))
 
     def _vc(self, interaction: discord.Interaction):
         return interaction.guild.voice_client if interaction.guild else None
@@ -784,10 +1033,18 @@ class NowPlayingView(discord.ui.View):
         if not vc:
             await interaction.response.send_message("Ses kanalinda degilim.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         elif vc.is_playing():
+            player = get_player(self.guild_id)
+            player.current_elapsed_offset = current_position(player)
+            player.paused_at = time.monotonic()
             vc.pause()
+            await update_music_panel(self.guild_id)
             await interaction.response.send_message("Duraklatildi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         elif vc.is_paused():
+            player = get_player(self.guild_id)
+            player.current_started_at = time.monotonic()
+            player.paused_at = None
             vc.resume()
+            await update_music_panel(self.guild_id)
             await interaction.response.send_message("Devam ediyor.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
             await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
@@ -840,6 +1097,9 @@ async def stop_music_player(guild):
         player.current = None
         player.starting = False
         player.mode = "music"
+        player.current_started_at = None
+        player.current_elapsed_offset = 0
+        player.paused_at = None
         if player.prefetch_task and not player.prefetch_task.done():
             player.prefetch_task.cancel()
         player.prefetch_task = None
@@ -894,11 +1154,16 @@ async def play_next(guild):
             player.starting = False
             return
         player.current = track
+        seek_seconds = int(track.resume_at or 0)
+        player.current_elapsed_offset = seek_seconds
+        player.current_started_at = time.monotonic()
+        player.paused_at = None
+        track.resume_at = 0
 
     def after_play(error):
         asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error, generation), bot.loop)
 
-    vc.play(discord.FFmpegPCMAudio(track.audio_url, **FFMPEG_OPTS), after=after_play)
+    vc.play(discord.FFmpegPCMAudio(track.audio_url, **ffmpeg_options_for_seek(seek_seconds)), after=after_play)
     vc.source = discord.PCMVolumeTransformer(vc.source, volume=player.volume)
     async with player.lock:
         player.starting = False
@@ -919,9 +1184,13 @@ async def handle_track_finished(guild, track: Track, error, generation: int):
         print(f"Oynatma hatasi: {error}")
         retry = not player.skip_requested and track.attempts < 2
     needs_autoplay = False
+    should_record_stat = False
     async with player.lock:
         if player.current is track:
             player.current = None
+        player.current_started_at = None
+        player.current_elapsed_offset = 0
+        player.paused_at = None
         if retry:
             track.attempts += 1
             track.audio_url = None
@@ -930,7 +1199,18 @@ async def handle_track_finished(guild, track: Track, error, generation: int):
         elif not error:
             player.history.append(track)
             player.history = player.history[-50:]
-            if player.autoplay and not player.queue and track.source != "radio":
+            should_record_stat = True
+            if not player.skip_requested and player.repeat_mode == "track" and track.source != "radio":
+                track.audio_url = None
+                track.resolved = False
+                track.resume_at = 0
+                player.queue.insert(0, track)
+            elif not player.skip_requested and player.repeat_mode == "queue" and track.source != "radio":
+                track.audio_url = None
+                track.resolved = False
+                track.resume_at = 0
+                player.queue.append(track)
+            elif player.autoplay and not player.queue and track.source != "radio":
                 needs_autoplay = True
         player.skip_requested = False
     if needs_autoplay:
@@ -943,7 +1223,7 @@ async def handle_track_finished(guild, track: Track, error, generation: int):
             channel = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
             if channel:
                 await channel.send("Otomatik öneri için yeni bir şarkı bulamadım, aynı şarkıyı tekrar açmadım.")
-    if not retry and not error:
+    if should_record_stat:
         record_music_stat(guild.id, track)
     await play_next(guild)
 
@@ -1241,11 +1521,15 @@ async def on_voice_state_update(member, before, after):
     async with player.lock:
         if player.mode == "music" and player.current:
             track_to_resume = player.current
+            track_to_resume.resume_at = current_position(player)
             track_to_resume.audio_url = None
             track_to_resume.resolved = False
             player.queue.insert(0, track_to_resume)
             player.current = None
             player.starting = True
+            player.current_started_at = None
+            player.current_elapsed_offset = 0
+            player.paused_at = None
         elif player.mode != "music":
             player.current = None
 
@@ -1373,7 +1657,11 @@ async def atla(interaction: discord.Interaction, miktar: int = 1):
 async def duraklat(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
+        player = get_player(interaction.guild.id)
+        player.current_elapsed_offset = current_position(player)
+        player.paused_at = time.monotonic()
         vc.pause()
+        await update_music_panel(interaction.guild.id)
         await interaction.response.send_message("Duraklatildi!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
     else:
         await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
@@ -1382,7 +1670,11 @@ async def duraklat(interaction: discord.Interaction):
 async def devam(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
+        player = get_player(interaction.guild.id)
+        player.current_started_at = time.monotonic()
+        player.paused_at = None
         vc.resume()
+        await update_music_panel(interaction.guild.id)
         await interaction.response.send_message("Devam ediliyor!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
     else:
         await interaction.response.send_message("Duraklatilmis bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
@@ -1410,13 +1702,18 @@ async def sardir(interaction: discord.Interaction, saniye: int):
         async with player.lock:
             player.ignore_next_after = True
             player.skip_requested = False
+            player.current_elapsed_offset = max(0, int(saniye))
+            player.current_started_at = time.monotonic()
+            player.paused_at = None
+            generation = player.playback_generation
         def after_seek(error):
-            asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error), bot.loop)
+            asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error, generation), bot.loop)
         vc.stop()
         await asyncio.sleep(0.5)
         vc.play(discord.FFmpegPCMAudio(track.audio_url, **seek_opts), after=after_seek)
         vc.source = discord.PCMVolumeTransformer(vc.source, volume=volume)
         dakika, sn = divmod(saniye, 60)
+        await update_music_panel(interaction.guild.id)
         await interaction.followup.send(f"{dakika:02d}:{sn:02d} saniyesine sarildi!")
     except Exception as e:
         await interaction.followup.send(f"Hata: {e}")
@@ -1447,6 +1744,45 @@ async def ses(interaction: discord.Interaction, seviye: int):
 async def kuyruk_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=build_queue_embed(get_player(interaction.guild.id)))
 
+@bot.tree.command(name="playlistkaydet", description="Mevcut muzik kuyrugunu sunucu playlisti olarak kaydeder")
+@app_commands.describe(ad="Playlist adi")
+async def playlistkaydet(interaction: discord.Interaction, ad: str):
+    player = get_player(interaction.guild.id)
+    tracks = ([player.current] if player.current else []) + list(player.queue)
+    tracks = [track for track in tracks if isinstance(track, Track)]
+    if not tracks:
+        await interaction.response.send_message("Kaydedilecek sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+        return
+    playlists = load_music_playlists()
+    guild_playlists = playlists.setdefault(str(interaction.guild.id), {})
+    safe_name = option_label(ad, 60)
+    guild_playlists[safe_name] = [serialize_track(track) for track in tracks[:100]]
+    save_music_playlists(playlists)
+    await update_music_panel(interaction.guild.id)
+    await interaction.response.send_message(f"Playlist kaydedildi: {safe_name} ({len(guild_playlists[safe_name])} sarki)", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+
+@bot.tree.command(name="playlistler", description="Sunucudaki kayitli muzik playlistlerini gosterir")
+async def playlistler(interaction: discord.Interaction):
+    playlists = load_music_playlists().get(str(interaction.guild.id), {})
+    if not playlists:
+        await interaction.response.send_message("Bu sunucuda kayitli playlist yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+        return
+    lines = [f"`{name}` - {len(items)} sarki" for name, items in playlists.items()]
+    await interaction.response.send_message("\n".join(lines[:25]), ephemeral=True)
+
+@bot.tree.command(name="playlistsil", description="Sunucu playlistini siler")
+@app_commands.describe(ad="Silinecek playlist adi")
+async def playlistsil(interaction: discord.Interaction, ad: str):
+    playlists = load_music_playlists()
+    guild_playlists = playlists.get(str(interaction.guild.id), {})
+    if ad not in guild_playlists:
+        await interaction.response.send_message("Bu isimde playlist bulunamadi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+        return
+    guild_playlists.pop(ad, None)
+    save_music_playlists(playlists)
+    await update_music_panel(interaction.guild.id)
+    await interaction.response.send_message(f"Playlist silindi: {ad}", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+
 @bot.tree.command(name="gecmis", description="Son calinan sarkilari goster")
 async def gecmis(interaction: discord.Interaction):
     await interaction.response.send_message(embed=build_history_embed(get_player(interaction.guild.id)))
@@ -1462,6 +1798,20 @@ async def otomatik(interaction: discord.Interaction, durum: str):
     player.autoplay = durum == "ac"
     await update_music_panel(interaction.guild.id)
     await interaction.response.send_message("Otomatik oneri acildi." if player.autoplay else "Otomatik oneri kapatildi.")
+
+@bot.tree.command(name="tekrar", description="Muzik tekrar modunu ayarlar")
+@app_commands.describe(mod="Tekrar modu")
+@app_commands.choices(mod=[
+    app_commands.Choice(name="Kapali", value="off"),
+    app_commands.Choice(name="Sarki", value="track"),
+    app_commands.Choice(name="Kuyruk", value="queue"),
+])
+async def tekrar(interaction: discord.Interaction, mod: str):
+    player = get_player(interaction.guild.id)
+    player.repeat_mode = mod
+    await update_music_panel(interaction.guild.id)
+    labels = {"off": "Tekrar kapatildi.", "track": "Calan sarki tekrar edilecek.", "queue": "Kuyruk tekrar edilecek."}
+    await interaction.response.send_message(labels.get(mod, "Tekrar modu guncellendi."), ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
 @bot.tree.command(name="muzikprofil", description="Muzik istatistiklerini goster")
 async def muzikprofil(interaction: discord.Interaction):
