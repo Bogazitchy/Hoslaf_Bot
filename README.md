@@ -17,7 +17,7 @@
 <p>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/discord.py-2.x-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="discord.py">
-  <img src="https://img.shields.io/badge/Audio-yt--dlp%20%2B%20FFmpeg-00A86B?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="yt-dlp + FFmpeg">
+  <img src="https://img.shields.io/badge/Audio-Lavalink%20%2B%20Wavelink-00A86B?style=for-the-badge&logo=waves&logoColor=white" alt="Lavalink + Wavelink">
   <img src="https://img.shields.io/badge/Spotify-Ready-1DB954?style=for-the-badge&logo=spotify&logoColor=white" alt="Spotify">
   <img src="https://img.shields.io/badge/VPS-24%2F7-111111?style=for-the-badge&logo=linux&logoColor=white" alt="VPS">
 </p>
@@ -117,7 +117,7 @@ Ilerleme
 Ses: %80
 Isteyen: melihwastaken
 Tekrar: Kuyruk
-Altyapi: FFmpeg
+Altyapi: Lavalink
 ```
 
 ### Panel Kontrolleri
@@ -136,6 +136,8 @@ Altyapi: FFmpeg
 
 ## Muzik Ozellikleri
 
+- Lavalink v4 ses altyapisi
+- Wavelink tabanli Discord player
 - YouTube video ve playlist destegi
 - Spotify sarki, album ve playlist cozumleme
 - SoundCloud link destegi
@@ -149,10 +151,7 @@ Altyapi: FFmpeg
 - Sunucuya ozel playlist kayitlari
 - Metadata cache
 - Ses kanali kopmalarinda toparlanma
-
-> Not: Lavalink icin ortam degiskeni algilama ve panelde altyapi gostergesi
-> hazirdir. Tam Lavalink player gecisi ayri bir mimari tasima olarak
-> planlanmistir.
+- Java/Lavalink servis mimarisiyle daha stabil oynatma
 
 ## Komutlar
 
@@ -210,7 +209,8 @@ Altyapi: FFmpeg
 ### Gereksinimler
 
 - Python 3.10 veya uzeri
-- FFmpeg
+- Java 17 veya uzeri
+- Lavalink v4
 - Discord bot tokeni
 - Spotify API bilgileri
 - Genius API tokeni
@@ -242,14 +242,38 @@ python3 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements.txt
 ```
 
-### FFmpeg Kontrolu
+### Java Kontrolu
 
 ```bash
-ffmpeg -version
+java -version
 ```
 
-FFmpeg sistem PATH icinde bulunmali veya calisma ortamindan erisilebilir
-olmalidir.
+Lavalink icin Java 17 veya uzeri gerekir. VPS ortaminda Java 21 onerilir.
+
+### Lavalink Node
+
+Botun muzik oynatma motoru Lavalink uzerinden calisir. Lavalink, Python bot
+surecinden ayri bir Java servisi olarak ayakta durur ve Discord ses aktarimini
+yonetir.
+
+Canli VPS yapisi:
+
+```text
+/opt/lavalink/
+├── Lavalink.jar
+├── application.yml
+└── logs/
+```
+
+Systemd servis kontrolu:
+
+```bash
+systemctl status lavalink.service
+journalctl -u lavalink.service -n 100 --no-pager
+```
+
+Lavalink yalnizca `127.0.0.1:2333` uzerinden dinler. Dis dunyaya acik
+degildir; bot ayni VPS icinden baglanir.
 
 ### Ortam Degiskenleri
 
@@ -267,9 +291,9 @@ EXA_API_KEY=exa_api_key
 APIF_KEY=api_football_key
 FD_KEY=football_data_key
 
-# Opsiyonel Lavalink hazirligi
 LAVALINK_HOST=127.0.0.1
 LAVALINK_PORT=2333
+LAVALINK_URI=http://127.0.0.1:2333
 LAVALINK_PASSWORD=youshallnotpass
 ```
 
@@ -283,7 +307,7 @@ LAVALINK_PASSWORD=youshallnotpass
 | `EXA_API_KEY` | Web arama ozelligi |
 | `APIF_KEY` | API-Football verileri |
 | `FD_KEY` | Football-Data verileri |
-| `LAVALINK_*` | Gelecek Lavalink player gecisi icin hazirlik |
+| `LAVALINK_*` | Lavalink node baglantisi |
 
 ### Botu Baslat
 
@@ -425,8 +449,9 @@ logs/
 </p>
 
 - `discord.py`: Slash komutlar, butonlar, dropdownlar ve ses baglantisi
-- `yt-dlp`: YouTube, SoundCloud ve medya cozumleme
-- `FFmpeg`: Ses aktarimi
+- `Lavalink`: Ayrik ses node'u ve Discord ses aktarimi
+- `Wavelink`: Python bot ile Lavalink arasindaki player katmani
+- `yt-dlp`: Playlist ve metadata cozumleme yardimcilari
 - `Spotipy`: Spotify icerik cozumleme
 - `aiohttp` ve `requests`: Harici API istekleri
 - `Genius`: Sarki sozleri
@@ -436,7 +461,7 @@ logs/
 
 ## Yol Haritasi
 
-- Tam Lavalink player gecisi
+- Lavalink node izleme ve otomatik saglik bildirimi
 - Web tabanli yonetim paneli
 - Sunucu bazli ayar paneli
 - Daha gelismis izin sistemi

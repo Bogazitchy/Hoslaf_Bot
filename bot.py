@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import tasks, commands
+import wavelink
 import yt_dlp
 import spotipy
 from spotipy.cache_handler import CacheFileHandler
@@ -101,6 +102,9 @@ PROGRESS_BAR_LENGTH = 18
 LAVALINK_HOST = os.getenv("LAVALINK_HOST")
 LAVALINK_PORT = os.getenv("LAVALINK_PORT")
 LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD")
+LAVALINK_URI = os.getenv("LAVALINK_URI") or (
+    f"http://{LAVALINK_HOST}:{LAVALINK_PORT}" if LAVALINK_HOST and LAVALINK_PORT else None
+)
 
 # ── Futbol Sabitleri ──────────────────────────────────────────────────────────
 FD_LEAGUES = {
@@ -137,6 +141,7 @@ class HoslafBot(discord.Client):
 
     async def setup_hook(self):
         await self.tree.sync()
+        self.loop.create_task(connect_lavalink())
         gunluk_haber.start()
         daily_schedule_task.start()
         gunluk_wiki.start()
@@ -246,6 +251,7 @@ class MusicPlayer:
 
 players: dict[int, MusicPlayer] = {}
 MUSIC_STATS_FILE = "music_stats.json"
+LAVALINK_CONNECTED = False
 
 def get_player(guild_id: int) -> MusicPlayer:
     player = players.get(guild_id)
@@ -253,6 +259,89 @@ def get_player(guild_id: int) -> MusicPlayer:
         player = MusicPlayer(guild_id=guild_id)
         players[guild_id] = player
     return player
+
+async def connect_lavalink():
+    global LAVALINK_CONNECTED
+    await bot.wait_until_ready()
+    if not LAVALINK_URI or not LAVALINK_PASSWORD:
+        print("Lavalink ayarlari eksik. LAVALINK_URI veya LAVALINK_HOST/PORT ve LAVALINK_PASSWORD gerekli.")
+        return
+    for attempt in range(1, 6):
+        try:
+            if wavelink.Pool.nodes:
+                LAVALINK_CONNECTED = True
+                return
+            node = wavelink.Node(identifier="hoslaf-main", uri=LAVALINK_URI, password=LAVALINK_PASSWORD)
+            await wavelink.Pool.connect(nodes=[node], client=bot, cache_capacity=256)
+            LAVALINK_CONNECTED = True
+            print(f"Lavalink baglandi: {LAVALINK_URI}")
+            return
+        except Exception as exc:
+            LAVALINK_CONNECTED = False
+            print(f"Lavalink baglanti denemesi {attempt}/5 basarisiz: {exc}")
+            await asyncio.sleep(5 * attempt)
+
+async def ensure_lavalink_ready():
+    if wavelink.Pool.nodes:
+        return
+    await connect_lavalink()
+    if not wavelink.Pool.nodes:
+        raise RuntimeError("Lavalink baglantisi hazir degil.")
+
+def is_lavalink_player(vc):
+    return isinstance(vc, wavelink.Player)
+
+def voice_is_playing(vc):
+    if not vc:
+        return False
+    if is_lavalink_player(vc):
+        return bool(vc.playing)
+    return vc.is_playing()
+
+def voice_is_paused(vc):
+    if not vc:
+        return False
+    if is_lavalink_player(vc):
+        return bool(vc.paused)
+    return vc.is_paused()
+
+async def voice_stop(vc):
+    if not vc:
+        return
+    if is_lavalink_player(vc):
+        await vc.stop()
+    else:
+        vc.stop()
+
+async def voice_pause(vc, paused: bool):
+    if not vc:
+        return
+    if is_lavalink_player(vc):
+        await vc.pause(paused)
+    elif paused:
+        vc.pause()
+    else:
+        vc.resume()
+
+async def voice_set_volume(vc, volume: float):
+    if not vc:
+        return
+    if is_lavalink_player(vc):
+        await vc.set_volume(max(0, min(150, int(volume * 100))))
+    elif vc.source and hasattr(vc.source, "volume"):
+        vc.source.volume = volume
+
+async def ensure_voice_player(guild, voice_channel):
+    await ensure_lavalink_ready()
+    vc = guild.voice_client
+    if vc is None:
+        return await voice_channel.connect(cls=wavelink.Player, self_deaf=True)
+    if not is_lavalink_player(vc):
+        await vc.disconnect(force=True)
+        return await voice_channel.connect(cls=wavelink.Player, self_deaf=True)
+    if vc.channel != voice_channel:
+        await vc.move_to(voice_channel)
+    return vc
 
 def load_music_stats():
     try:
@@ -364,7 +453,7 @@ def is_playback_active(player: MusicPlayer, vc):
         player.starting
         or player.current
         or player.queue
-        or (vc and (vc.is_playing() or vc.is_paused()))
+        or (vc and (voice_is_playing(vc) or voice_is_paused(vc)))
     )
 
 def is_spotify_url(t): return "spotify.com" in t or t.startswith("spotify:")
@@ -624,6 +713,24 @@ async def resolve_track(track: Track, *, refresh_audio: bool = False):
     set_cached_metadata(cache_key, metadata)
     return track
 
+async def resolve_lavalink_track(track: Track):
+    await ensure_lavalink_ready()
+    query = track.webpage_url or track.query
+    source = None if is_url(query) else wavelink.TrackSource.YouTubeMusic
+    results = await wavelink.Playable.search(query, source=source)
+    if not results:
+        raise RuntimeError("Lavalink sarkiyi bulamadi.")
+    playable = results[0]
+    track.title = getattr(playable, "title", None) or track.title or track.query
+    track.webpage_url = getattr(playable, "uri", None) or track.webpage_url
+    track.thumbnail = getattr(playable, "artwork", None) or track.thumbnail
+    track.duration = int(getattr(playable, "length", 0) / 1000) if getattr(playable, "length", 0) else track.duration
+    track.uploader = getattr(playable, "author", None) or track.uploader
+    track.resolved = True
+    track.audio_url = track.webpage_url
+    playable.extras = {"hoslaf_query": track.query}
+    return playable
+
 async def prefetch_queue(guild_id):
     player = get_player(guild_id)
     queue = player.queue
@@ -791,7 +898,7 @@ def build_music_panel_embed(player: MusicPlayer):
     embed.add_field(name="Otomatik Oneri", value="Acik" if player.autoplay else "Kapali", inline=True)
     repeat_labels = {"off": "Kapali", "track": "Sarki", "queue": "Kuyruk"}
     embed.add_field(name="Tekrar", value=repeat_labels.get(player.repeat_mode, "Kapali"), inline=True)
-    backend = "Lavalink hazir" if LAVALINK_HOST and LAVALINK_PORT and LAVALINK_PASSWORD else "FFmpeg"
+    backend = "Lavalink" if wavelink.Pool.nodes else "Lavalink bekleniyor"
     embed.add_field(name="Altyapi", value=backend, inline=True)
     embed.set_footer(text=f"{len(player.queue)} sarki sirada")
     return embed
@@ -902,7 +1009,7 @@ async def music_progress_task():
     for guild_id, player in list(players.items()):
         guild = bot.get_guild(guild_id)
         vc = guild.voice_client if guild else None
-        if player.current and vc and (vc.is_playing() or vc.is_paused()):
+        if player.current and vc and (voice_is_playing(vc) or voice_is_paused(vc)):
             try:
                 await update_music_panel(guild_id)
             except Exception as exc:
@@ -936,8 +1043,8 @@ class QueuePlaySelect(discord.ui.Select):
             selected = player.queue.pop(index)
             player.queue.insert(0, selected)
             player.skip_requested = True
-        if vc and (vc.is_playing() or vc.is_paused()):
-            vc.stop()
+        if vc and (voice_is_playing(vc) or voice_is_paused(vc)):
+            await voice_stop(vc)
             await interaction.response.send_message("Secilen sarki siradaki parca olarak baslatiliyor.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
             await interaction.response.defer(ephemeral=True)
@@ -1032,18 +1139,18 @@ class NowPlayingView(discord.ui.View):
         vc = self._vc(interaction)
         if not vc:
             await interaction.response.send_message("Ses kanalinda degilim.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
-        elif vc.is_playing():
+        elif voice_is_playing(vc):
             player = get_player(self.guild_id)
             player.current_elapsed_offset = current_position(player)
             player.paused_at = time.monotonic()
-            vc.pause()
+            await voice_pause(vc, True)
             await update_music_panel(self.guild_id)
             await interaction.response.send_message("Duraklatildi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
-        elif vc.is_paused():
+        elif voice_is_paused(vc):
             player = get_player(self.guild_id)
             player.current_started_at = time.monotonic()
             player.paused_at = None
-            vc.resume()
+            await voice_pause(vc, False)
             await update_music_panel(self.guild_id)
             await interaction.response.send_message("Devam ediyor.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
@@ -1053,9 +1160,9 @@ class NowPlayingView(discord.ui.View):
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = self._vc(interaction)
         player = get_player(self.guild_id)
-        if vc and (vc.is_playing() or vc.is_paused()):
+        if vc and (voice_is_playing(vc) or voice_is_paused(vc)):
             player.skip_requested = True
-            vc.stop()
+            await voice_stop(vc)
             await interaction.response.send_message("Atlandi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
             await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
@@ -1079,8 +1186,7 @@ class NowPlayingView(discord.ui.View):
         vc = self._vc(interaction)
         player = get_player(self.guild_id)
         player.volume = max(0.0, min(1.5, player.volume + delta))
-        if vc and vc.source and hasattr(vc.source, "volume"):
-            vc.source.volume = player.volume
+        await voice_set_volume(vc, player.volume)
         await update_music_panel(self.guild_id)
         await interaction.response.send_message(f"Ses seviyesi: %{int(player.volume * 100)}", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
@@ -1107,8 +1213,8 @@ async def stop_music_player(guild):
             player.idle_task.cancel()
         player.idle_task = None
     if vc:
-        if vc.is_playing() or vc.is_paused():
-            vc.stop()
+        if voice_is_playing(vc) or voice_is_paused(vc):
+            await voice_stop(vc)
         await vc.disconnect(force=True)
 
 async def play_next(guild):
@@ -1131,7 +1237,7 @@ async def play_next(guild):
         track = await resolve_queue_item(item)
         if not isinstance(track, Track):
             track = Track.url(track[0], track[1])
-        await resolve_track(track, refresh_audio=True)
+        playable = await resolve_lavalink_track(track)
     except Exception as e:
         print(f"Sarki yuklenemedi: {e}")
         channel = bot.get_channel(player.text_channel_id) if player.text_channel_id else None
@@ -1149,7 +1255,7 @@ async def play_next(guild):
             player.current = None
             player.starting = False
             return
-        if vc.is_playing() or vc.is_paused():
+        if voice_is_playing(vc) or voice_is_paused(vc):
             player.queue.insert(0, track)
             player.starting = False
             return
@@ -1160,11 +1266,7 @@ async def play_next(guild):
         player.paused_at = None
         track.resume_at = 0
 
-    def after_play(error):
-        asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error, generation), bot.loop)
-
-    vc.play(discord.FFmpegPCMAudio(track.audio_url, **ffmpeg_options_for_seek(seek_seconds)), after=after_play)
-    vc.source = discord.PCMVolumeTransformer(vc.source, volume=player.volume)
+    await vc.play(playable, start=max(0, seek_seconds) * 1000, volume=max(0, min(150, int(player.volume * 100))))
     async with player.lock:
         player.starting = False
 
@@ -1496,6 +1598,43 @@ async def on_ready():
     print(f"Hoslaf Bot hazir! {bot.user}")
 
 @bot.event
+async def on_wavelink_node_ready(payload: wavelink.NodeReadyEventPayload):
+    print(f"Lavalink node hazir: {payload.node.identifier}")
+
+@bot.event
+async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
+    if not payload.player or not payload.player.guild:
+        return
+    guild = payload.player.guild
+    player = get_player(guild.id)
+    track = player.current
+    if not track:
+        return
+    await handle_track_finished(guild, track, None, player.playback_generation)
+
+@bot.event
+async def on_wavelink_track_exception(payload: wavelink.TrackExceptionEventPayload):
+    if not payload.player or not payload.player.guild:
+        return
+    guild = payload.player.guild
+    player = get_player(guild.id)
+    track = player.current
+    if not track:
+        return
+    await handle_track_finished(guild, track, payload.exception, player.playback_generation)
+
+@bot.event
+async def on_wavelink_track_stuck(payload: wavelink.TrackStuckEventPayload):
+    if not payload.player or not payload.player.guild:
+        return
+    guild = payload.player.guild
+    player = get_player(guild.id)
+    track = player.current
+    if not track:
+        return
+    await handle_track_finished(guild, track, RuntimeError("Lavalink track stuck"), player.playback_generation)
+
+@bot.event
 async def on_voice_state_update(member, before, after):
     if not bot.user or not member.guild:
         return
@@ -1537,7 +1676,7 @@ async def on_voice_state_update(member, before, after):
         await asyncio.sleep(3)
         try:
             player.voice_channel_id = before.channel.id
-            await before.channel.connect()
+            await ensure_voice_player(member.guild, before.channel)
             await play_next(member.guild)
         except Exception as exc:
             print(f"Voice reconnect failed: {exc}")
@@ -1561,11 +1700,11 @@ async def oynat(interaction: discord.Interaction, sarki: str):
     player.text_channel_id = interaction.channel.id
     player.voice_channel_id = voice_channel.id
     player.manual_disconnect = False
-    vc = guild.voice_client
-    if vc is None:
-        vc = await voice_channel.connect()
-    elif vc.channel != voice_channel:
-        await vc.move_to(voice_channel)
+    try:
+        vc = await ensure_voice_player(guild, voice_channel)
+    except Exception as exc:
+        await send_temporary_followup(interaction, f"Lavalink hazir degil: {exc}")
+        return
 
     try:
         tracks: list[Track] = []
@@ -1644,23 +1783,23 @@ async def kapat(interaction: discord.Interaction):
 async def atla(interaction: discord.Interaction, miktar: int = 1):
     vc = interaction.guild.voice_client
     player = get_player(interaction.guild.id)
-    if not vc or (not vc.is_playing() and not vc.is_paused()):
+    if not vc or (not voice_is_playing(vc) and not voice_is_paused(vc)):
         await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
     async with player.lock:
         del player.queue[:min(max(miktar - 1, 0), len(player.queue))]
         player.skip_requested = True
-    vc.stop()
+    await voice_stop(vc)
     await interaction.response.send_message(f"{miktar} sarki atlandi!" if miktar > 1 else "Atlandi!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
 @bot.tree.command(name="duraklat", description="Sarkiyi duraklatir")
 async def duraklat(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
-    if vc and vc.is_playing():
+    if vc and voice_is_playing(vc):
         player = get_player(interaction.guild.id)
         player.current_elapsed_offset = current_position(player)
         player.paused_at = time.monotonic()
-        vc.pause()
+        await voice_pause(vc, True)
         await update_music_panel(interaction.guild.id)
         await interaction.response.send_message("Duraklatildi!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
     else:
@@ -1669,11 +1808,11 @@ async def duraklat(interaction: discord.Interaction):
 @bot.tree.command(name="devam", description="Duraklatilan sarkiyi devam ettirir")
 async def devam(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
-    if vc and vc.is_paused():
+    if vc and voice_is_paused(vc):
         player = get_player(interaction.guild.id)
         player.current_started_at = time.monotonic()
         player.paused_at = None
-        vc.resume()
+        await voice_pause(vc, False)
         await update_music_panel(interaction.guild.id)
         await interaction.response.send_message("Devam ediliyor!", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
     else:
@@ -1684,34 +1823,21 @@ async def devam(interaction: discord.Interaction):
 async def sardir(interaction: discord.Interaction, saniye: int):
     vc = interaction.guild.voice_client
     player = get_player(interaction.guild.id)
-    if not vc or (not vc.is_playing() and not vc.is_paused()) or not player.current:
+    if not vc or (not voice_is_playing(vc) and not voice_is_paused(vc)) or not player.current:
         await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         return
     guild = interaction.guild
     await interaction.response.defer()
     try:
-        track = player.current
-        await resolve_track(track, refresh_audio=True)
-        seek_opts = {
-            "before_options": f"-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx -reconnect_delay_max 7 -ss {saniye}",
-            "options": "-vn",
-        }
-        volume = player.volume
-        if vc.source and hasattr(vc.source, "volume"):
-            volume = vc.source.volume
         async with player.lock:
-            player.ignore_next_after = True
             player.skip_requested = False
             player.current_elapsed_offset = max(0, int(saniye))
             player.current_started_at = time.monotonic()
             player.paused_at = None
-            generation = player.playback_generation
-        def after_seek(error):
-            asyncio.run_coroutine_threadsafe(handle_track_finished(guild, track, error, generation), bot.loop)
-        vc.stop()
-        await asyncio.sleep(0.5)
-        vc.play(discord.FFmpegPCMAudio(track.audio_url, **seek_opts), after=after_seek)
-        vc.source = discord.PCMVolumeTransformer(vc.source, volume=volume)
+        if is_lavalink_player(vc):
+            await vc.seek(max(0, int(saniye)) * 1000)
+        else:
+            raise RuntimeError("Bu komut Lavalink player gerektiriyor.")
         dakika, sn = divmod(saniye, 60)
         await update_music_panel(interaction.guild.id)
         await interaction.followup.send(f"{dakika:02d}:{sn:02d} saniyesine sarildi!")
@@ -1734,8 +1860,8 @@ async def ses(interaction: discord.Interaction, seviye: int):
     vc = interaction.guild.voice_client
     player = get_player(interaction.guild.id)
     player.volume = max(0, min(seviye, 100)) / 100
-    if vc and vc.source and hasattr(vc.source, "volume"):
-        vc.source.volume = player.volume
+    if vc:
+        await voice_set_volume(vc, player.volume)
         await interaction.response.send_message(f"Ses seviyesi: **{seviye}%**")
     else:
         await interaction.response.send_message(f"Ses seviyesi kaydedildi: **{seviye}%**")
@@ -2128,15 +2254,14 @@ async def radyo(interaction: discord.Interaction, isim: str):
     player = get_player(guild.id)
     player.text_channel_id = interaction.channel.id
     player.voice_channel_id = voice_channel.id
-    vc = guild.voice_client
+    try:
+        vc = await ensure_voice_player(guild, voice_channel)
+    except Exception as exc:
+        await interaction.followup.send(f"Lavalink hazir degil: {exc}")
+        return
 
-    if vc is None:
-        vc = await voice_channel.connect()
-    elif vc.channel != voice_channel:
-        await vc.move_to(voice_channel)
-
-    if vc.is_playing() or vc.is_paused():
-        vc.stop()
+    if voice_is_playing(vc) or voice_is_paused(vc):
+        await voice_stop(vc)
     async with player.lock:
         player.queue.clear()
         player.current = None
@@ -2147,9 +2272,7 @@ async def radyo(interaction: discord.Interaction, isim: str):
             player.prefetch_task.cancel()
 
     try:
-        vc.play(discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS))
-        vc.source = discord.PCMVolumeTransformer(vc.source, volume=player.volume)
-        player.current = Track(
+        radio_track = Track(
             source="radio",
             query=stream_url,
             title=f"Radyo: {radyo_adi}",
@@ -2157,6 +2280,9 @@ async def radyo(interaction: discord.Interaction, isim: str):
             thumbnail=favicon or None,
             resolved=True,
         )
+        playable = await resolve_lavalink_track(radio_track)
+        await vc.play(playable, volume=max(0, min(150, int(player.volume * 100))))
+        player.current = radio_track
 
         embed = discord.Embed(
             title="Radyo Baslatildi",
