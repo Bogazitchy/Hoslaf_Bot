@@ -1139,13 +1139,6 @@ class NowPlayingView(discord.ui.View):
         vc = self._vc(interaction)
         if not vc:
             await interaction.response.send_message("Ses kanalinda degilim.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
-        elif voice_is_playing(vc):
-            player = get_player(self.guild_id)
-            player.current_elapsed_offset = current_position(player)
-            player.paused_at = time.monotonic()
-            await voice_pause(vc, True)
-            await update_music_panel(self.guild_id)
-            await interaction.response.send_message("Duraklatildi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         elif voice_is_paused(vc):
             player = get_player(self.guild_id)
             player.current_started_at = time.monotonic()
@@ -1153,6 +1146,13 @@ class NowPlayingView(discord.ui.View):
             await voice_pause(vc, False)
             await update_music_panel(self.guild_id)
             await interaction.response.send_message("Devam ediyor.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
+        elif voice_is_playing(vc):
+            player = get_player(self.guild_id)
+            player.current_elapsed_offset = current_position(player)
+            player.paused_at = time.monotonic()
+            await voice_pause(vc, True)
+            await update_music_panel(self.guild_id)
+            await interaction.response.send_message("Duraklatildi.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
         else:
             await interaction.response.send_message("Su an calan bir sarki yok.", ephemeral=True, delete_after=TEMP_MUSIC_MESSAGE_SECONDS)
 
